@@ -1,6 +1,7 @@
 import Twilio from 'twilio';
 import WebSocket from 'ws';
 import { createServer } from 'http';
+import OpenAI from 'openai';
 
 interface CallResult {
   status: 'completed' | 'failed' | 'timeout';
@@ -49,204 +50,238 @@ function loadConfig(): Config {
   };
 }
 
-class VoiceHandler {
-  private openaiWs: WebSocket | null = null;
+/**
+ * Simple conversation bridge - NO AI here!
+ * Just handles voice I/O and basic follow-up logic.
+ * Claude Code (the main instance) provides ALL the intelligence.
+ */
+class ConversationBridge {
+  private openai: OpenAI;
+  private audioChunks: Buffer[] = [];
   private userResponses: string[] = [];
-  private isComplete = false;
   private startTime: number;
 
   constructor(
     private config: Config,
-    private question: string,
-    private urgency: string
+    private initialQuestion: string
   ) {
+    this.openai = new OpenAI({ apiKey: config.openaiApiKey });
     this.startTime = Date.now();
   }
 
   async handleCall(twilioWs: WebSocket): Promise<CallResult> {
-    return new Promise((resolve, reject) => {
-      this.initializeOpenAI(resolve, reject);
-
-      twilioWs.on('message', (message: string) => {
-        try {
-          const msg = JSON.parse(message);
-          this.handleTwilioMessage(msg);
-        } catch (error) {
-          console.error('Error parsing Twilio message:', error);
-        }
-      });
-
-      twilioWs.on('close', () => {
-        this.cleanup();
-        if (!this.isComplete) {
-          reject(new Error('Call ended prematurely'));
-        }
-      });
-
-      twilioWs.on('error', (error) => {
-        this.cleanup();
-        reject(error);
-      });
-
-      // Timeout after 5 minutes
-      setTimeout(() => {
-        if (!this.isComplete) {
-          this.cleanup();
-          reject(new Error('Call timeout after 5 minutes'));
-        }
-      }, 300000);
-    });
-  }
-
-  private initializeOpenAI(
-    resolve: (value: CallResult) => void,
-    reject: (reason: any) => void
-  ) {
-    const url = 'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17';
-    this.openaiWs = new WebSocket(url, {
-      headers: {
-        Authorization: `Bearer ${this.config.openaiApiKey}`,
-        'OpenAI-Beta': 'realtime=v1',
-      },
-    });
-
-    this.openaiWs.on('open', () => {
-      console.error('Connected to OpenAI Realtime API');
-      this.sendSessionUpdate();
-    });
-
-    this.openaiWs.on('message', (data: Buffer) => {
+    return new Promise(async (resolve, reject) => {
       try {
-        const event = JSON.parse(data.toString());
-        this.handleOpenAIEvent(event, resolve, reject);
+        // Greet and ask the question
+        await this.speak(
+          twilioWs,
+          `Hello, I'm calling on behalf of Claude Code. ${this.initialQuestion}`
+        );
+
+        // Listen for response
+        const response = await this.listenForResponse(twilioWs);
+        this.userResponses.push(response);
+
+        // Simple follow-up logic (no AI needed)
+        if (response.split(' ').length < 10) {
+          await this.speak(twilioWs, 'Could you elaborate a bit more?');
+          const elaboration = await this.listenForResponse(twilioWs);
+          this.userResponses.push(elaboration);
+        }
+
+        // Confirm and end
+        await this.speak(
+          twilioWs,
+          "Thank you. I'll relay this information to Claude Code."
+        );
+
+        const duration = Math.round((Date.now() - this.startTime) / 1000);
+        resolve({
+          status: 'completed',
+          transcript: this.userResponses.join('\n\n'),
+          duration,
+        });
       } catch (error) {
-        console.error('Error parsing OpenAI message:', error);
+        reject(error);
       }
     });
+  }
 
-    this.openaiWs.on('error', (error) => {
-      reject(error);
+  private async speak(ws: WebSocket, text: string): Promise<void> {
+    console.error(`Speaking: ${text}`);
+
+    // Generate speech with OpenAI TTS ($0.015/1K chars ≈ $0.03-0.05/min)
+    const mp3Response = await this.openai.audio.speech.create({
+      model: 'tts-1', // Faster, cheaper model
+      voice: 'onyx', // Clear male voice
+      input: text,
+      response_format: 'pcm', // Get raw PCM audio
+      speed: 1.0,
+    });
+
+    // Convert response to buffer
+    const arrayBuffer = await mp3Response.arrayBuffer();
+    const pcmData = Buffer.from(arrayBuffer);
+
+    // Convert PCM to μ-law for Twilio
+    const muLawData = this.pcmToMuLaw(pcmData);
+
+    // Send audio to Twilio in chunks
+    const chunkSize = 160; // 20ms chunks for μ-law @ 8kHz
+
+    for (let i = 0; i < muLawData.length; i += chunkSize) {
+      const chunk = muLawData.slice(i, i + chunkSize);
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(
+          JSON.stringify({
+            event: 'media',
+            media: {
+              payload: chunk.toString('base64'),
+            },
+          })
+        );
+      }
+      // Small delay to avoid overwhelming the connection
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+
+    // Wait a bit for speech to finish
+    await new Promise((resolve) => setTimeout(resolve, text.length * 50));
+  }
+
+  private pcmToMuLaw(pcmData: Buffer): Buffer {
+    const muLawData = Buffer.alloc(Math.floor(pcmData.length / 2));
+
+    for (let i = 0; i < muLawData.length; i++) {
+      const pcm = pcmData.readInt16LE(i * 2);
+      muLawData[i] = this.pcmToMuLawSample(pcm);
+    }
+
+    return muLawData;
+  }
+
+  private pcmToMuLawSample(pcm: number): number {
+    const BIAS = 0x84;
+    const CLIP = 32635;
+
+    let sign = (pcm >> 8) & 0x80;
+    if (sign) pcm = -pcm;
+    if (pcm > CLIP) pcm = CLIP;
+
+    pcm += BIAS;
+    let exponent = 7;
+    for (let expMask = 0x4000; (pcm & expMask) === 0 && exponent > 0; exponent--) {
+      expMask >>= 1;
+    }
+
+    const mantissa = (pcm >> (exponent + 3)) & 0x0f;
+    const muLaw = ~(sign | (exponent << 4) | mantissa);
+
+    return muLaw & 0xff;
+  }
+
+  private async listenForResponse(ws: WebSocket): Promise<string> {
+    return new Promise((resolve, reject) => {
+      this.audioChunks = [];
+      let silenceTimer: NodeJS.Timeout | null = null;
+      const SILENCE_THRESHOLD = 2000; // 2 seconds of silence = done speaking
+
+      const onMessage = async (message: string) => {
+        try {
+          const msg = JSON.parse(message);
+
+          if (msg.event === 'media' && msg.media?.payload) {
+            const audioData = Buffer.from(msg.media.payload, 'base64');
+            this.audioChunks.push(audioData);
+
+            // Reset silence timer
+            if (silenceTimer) clearTimeout(silenceTimer);
+            silenceTimer = setTimeout(async () => {
+              ws.off('message', onMessage);
+              const transcript = await this.transcribeAudio();
+              resolve(transcript);
+            }, SILENCE_THRESHOLD);
+          }
+        } catch (error) {
+          console.error('Error processing message:', error);
+        }
+      };
+
+      ws.on('message', onMessage);
+
+      // Timeout after 60 seconds
+      setTimeout(() => {
+        ws.off('message', onMessage);
+        if (silenceTimer) clearTimeout(silenceTimer);
+        reject(new Error('Response timeout'));
+      }, 60000);
     });
   }
 
-  private sendSessionUpdate() {
-    const urgencyNote = this.urgency === 'high' ? 'This is time-sensitive. ' : '';
-    const systemMessage = `You are calling on behalf of Claude Code, an AI coding assistant.
-
-${urgencyNote}Claude needs the following information:
-${this.question}
-
-Your task:
-1. Briefly explain what Claude needs (1-2 sentences)
-2. Ask for the user's input
-3. Listen carefully to their response
-4. Ask clarifying questions if the response is unclear or incomplete
-5. Once you have a complete answer, say "Thank you, I'll relay this to Claude" and the call will end
-
-Keep responses concise and natural for phone conversation. Be professional and helpful.`;
-
-    this.openaiWs?.send(
-      JSON.stringify({
-        type: 'session.update',
-        session: {
-          modalities: ['text', 'audio'],
-          instructions: systemMessage,
-          voice: 'alloy',
-          input_audio_format: 'g711_ulaw',
-          output_audio_format: 'g711_ulaw',
-          input_audio_transcription: {
-            model: 'whisper-1',
-          },
-          turn_detection: {
-            type: 'server_vad',
-            threshold: 0.5,
-            prefix_padding_ms: 300,
-            silence_duration_ms: 500,
-          },
-          temperature: 0.8,
-        },
-      })
-    );
-  }
-
-  private handleTwilioMessage(msg: any) {
-    switch (msg.event) {
-      case 'media':
-        if (this.openaiWs?.readyState === WebSocket.OPEN) {
-          this.openaiWs.send(
-            JSON.stringify({
-              type: 'input_audio_buffer.append',
-              audio: msg.media.payload,
-            })
-          );
-        }
-        break;
+  private async transcribeAudio(): Promise<string> {
+    if (this.audioChunks.length === 0) {
+      return '';
     }
-  }
 
-  private handleOpenAIEvent(
-    event: any,
-    resolve: (value: CallResult) => void,
-    reject: (reason: any) => void
-  ) {
-    switch (event.type) {
-      case 'conversation.item.input_audio_transcription.completed':
-        const userText = event.transcript;
-        console.error('User said:', userText);
-        this.userResponses.push(userText);
-        break;
+    // Combine all audio chunks
+    const fullAudio = Buffer.concat(this.audioChunks);
 
-      case 'response.done':
-        const response = event.response;
-        if (response.output && response.output.length > 0) {
-          const assistantText = response.output
-            .filter((item: any) => item.type === 'message')
-            .map((item: any) =>
-              item.content
-                .filter((c: any) => c.type === 'text')
-                .map((c: any) => c.text)
-                .join(' ')
-            )
-            .join(' ');
+    // Convert μ-law to WAV for Whisper
+    const wavBuffer = this.muLawToWav(fullAudio);
 
-          if (
-            assistantText &&
-            (assistantText.toLowerCase().includes("i'll relay this to claude") ||
-              assistantText.toLowerCase().includes('thank you'))
-          ) {
-            this.completeCall(resolve);
-          }
-        }
-        break;
-
-      case 'error':
-        console.error('OpenAI error:', event.error);
-        reject(new Error(event.error.message));
-        break;
-    }
-  }
-
-  private completeCall(resolve: (value: CallResult) => void) {
-    this.isComplete = true;
-    const duration = Math.round((Date.now() - this.startTime) / 1000);
-
-    setTimeout(() => {
-      const transcript = this.userResponses.join('\n\n');
-      console.error('Call completed with result:', transcript);
-      this.cleanup();
-      resolve({
-        status: 'completed',
-        transcript: transcript || 'No response captured',
-        duration,
+    // Use Whisper API for transcription (cheap and accurate!)
+    try {
+      const file = new File([wavBuffer], 'audio.wav', { type: 'audio/wav' });
+      const transcription = await this.openai.audio.transcriptions.create({
+        file,
+        model: 'whisper-1',
       });
-    }, 2000);
+
+      console.error('User said:', transcription.text);
+      return transcription.text;
+    } catch (error) {
+      console.error('Transcription error:', error);
+      return '[transcription failed]';
+    }
   }
 
-  private cleanup() {
-    if (this.openaiWs) {
-      this.openaiWs.close();
-      this.openaiWs = null;
+  private muLawToWav(muLawData: Buffer): Buffer {
+    // Simple μ-law to PCM conversion
+    const pcmData = Buffer.alloc(muLawData.length * 2);
+
+    for (let i = 0; i < muLawData.length; i++) {
+      const muLaw = muLawData[i];
+      const pcm = this.muLawToPcm(muLaw);
+      pcmData.writeInt16LE(pcm, i * 2);
     }
+
+    // Create WAV header
+    const header = Buffer.alloc(44);
+    header.write('RIFF', 0);
+    header.writeUInt32LE(36 + pcmData.length, 4);
+    header.write('WAVE', 8);
+    header.write('fmt ', 12);
+    header.writeUInt32LE(16, 16); // fmt chunk size
+    header.writeUInt16LE(1, 20); // PCM
+    header.writeUInt16LE(1, 22); // mono
+    header.writeUInt32LE(8000, 24); // sample rate
+    header.writeUInt32LE(16000, 28); // byte rate
+    header.writeUInt16LE(2, 32); // block align
+    header.writeUInt16LE(16, 34); // bits per sample
+    header.write('data', 36);
+    header.writeUInt32LE(pcmData.length, 40);
+
+    return Buffer.concat([header, pcmData]);
+  }
+
+  private muLawToPcm(muLaw: number): number {
+    const BIAS = 0x84;
+    const sign = muLaw & 0x80;
+    const exponent = (muLaw & 0x70) >> 4;
+    const mantissa = muLaw & 0x0f;
+    const step = 4 << (exponent + 1);
+    const pcm = BIAS + mantissa * step;
+    return sign ? -pcm : pcm;
   }
 }
 
@@ -259,7 +294,6 @@ export async function makePhoneCall(
 
   return new Promise((resolve, reject) => {
     let server: any;
-    let streamSid: string | null = null;
 
     // Create HTTP server for Twilio webhooks
     const httpServer = createServer((req, res) => {
@@ -299,21 +333,9 @@ export async function makePhoneCall(
 
     wss.on('connection', (ws) => {
       console.error('Twilio WebSocket connected');
-      const handler = new VoiceHandler(config, question, urgency);
+      const bridge = new ConversationBridge(config, question);
 
-      ws.on('message', (message: string) => {
-        try {
-          const msg = JSON.parse(message);
-          if (msg.event === 'start') {
-            streamSid = msg.start.streamSid;
-            console.error('Call started, streamSid:', streamSid);
-          }
-        } catch (error) {
-          console.error('Error parsing WebSocket message:', error);
-        }
-      });
-
-      handler
+      bridge
         .handleCall(ws)
         .then((result) => {
           cleanup();
@@ -335,8 +357,6 @@ export async function makePhoneCall(
           to: config.userPhoneNumber,
           from: config.twilioPhoneNumber,
           timeout: 60,
-          statusCallback: `${config.publicUrl}/status`,
-          statusCallbackEvent: ['initiated', 'ringing', 'answered', 'completed'],
         })
         .then((call) => {
           console.error('Call initiated:', call.sid);
@@ -356,6 +376,7 @@ export async function makePhoneCall(
     // Cleanup after 6 minutes regardless
     setTimeout(() => {
       cleanup();
+      reject(new Error('Call timeout'));
     }, 360000);
   });
 }

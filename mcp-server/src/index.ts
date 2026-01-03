@@ -26,7 +26,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
     tools: [
       {
         name: 'call_user_for_input',
-        description: 'Call the user on the phone to get their input, clarification, or decision. Use this when you need real-time voice communication, complex explanations, or when text interaction is insufficient. The AI will explain what you need, listen to the user\'s response, ask clarifying questions, and return the full transcript.',
+        description: 'Call the user on the phone to get their input, clarification, or decision. Use this when you need real-time voice communication, complex explanations, or when text interaction is insufficient. The tool acts as a simple voice bridge - YOU (Claude Code) provide the question/context, the tool converts it to speech, captures the user\'s voice response, transcribes it, and returns the text to you. No other AI is involved - you control the entire interaction.',
         inputSchema: {
           type: 'object',
           properties: {

@@ -1,7 +1,7 @@
 {
   "name": "@hey-boss/mcp-server",
-  "version": "1.0.0",
-  "description": "MCP server for phone call input in Claude Code",
+  "version": "2.0.0",
+  "description": "MCP server for phone call input - Claude Code controls the conversation",
   "type": "module",
   "main": "dist/index.js",
   "bin": {

@@ -32,37 +32,50 @@ Then add to Claude Code's MCP settings (see [Installation](#installation) below)
 
 ## How It Works
 
+**Key Insight:** Claude Code (the main AI) provides ALL the intelligence. The tool is just a "dumb" voice bridge that converts speech ↔ text. No redundant AI!
+
 ```
-┌─────────────────┐
-│  Claude Code    │  "I need to decide between PostgreSQL and MongoDB..."
-└────────┬────────┘
-         │ Invokes tool: call_user_for_input
-         ▼
-┌─────────────────┐
-│  Hey Boss MCP   │  Initiates call
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐      ┌──────────────┐
-│     Twilio      │─────►│  Your Phone  │  Ring ring!
-└────────┬────────┘      └──────┬───────┘
-         │                       │
-         │    WebSocket          │  You: "Use PostgreSQL, we already
-         │◄──────────────────────┤       have it set up..."
-         ▼                       │
-┌─────────────────┐              │  AI: "Got it, I'll relay that
-│  OpenAI Voice   │              │       to Claude. Thank you!"
-│   (Realtime)    │              │
-└─────────────────┘              │  Call ends
-         │                       │
-         │  Transcript           │
-         ▼                       │
-┌─────────────────┐              │
-│  Claude Code    │  Continues with: "Proceeding with PostgreSQL..."
-└─────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│  Claude Code (YOU - the only AI)                                │
+│  "I need to decide between PostgreSQL and MongoDB..."           │
+└──────────┬──────────────────────────────────────────────────────┘
+           │ Invokes: call_user_for_input("Should we use...")
+           ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  Hey Boss MCP Tool (Dumb voice bridge)                          │
+│  - Text → Speech (OpenAI TTS)                                   │
+│  - Speech → Text (Whisper)                                      │
+│  - No AI decision-making!                                       │
+└──────────┬──────────────────────────────────────────────────────┘
+           │
+           ▼
+┌──────────────┐                    ┌─────────────────────────────┐
+│   Twilio     │───────────────────►│  Your Phone  ☎              │
+│ (Phone call) │                    │                             │
+└──────────────┘                    └────────┬────────────────────┘
+                                             │
+    Voice: "Should we use PostgreSQL or MongoDB?"
+                                             │ You speak:
+                                             ▼ "Use PostgreSQL..."
+                                    ┌────────────────────┐
+                                    │  Whisper STT       │
+                                    │  (Transcription)   │
+                                    └────────┬───────────┘
+                                             │ Text transcript
+                                             ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  Claude Code receives: "Use PostgreSQL, we already have..."     │
+│  Decides next action: "Perfect, proceeding with PostgreSQL..."  │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-**Claude decides when to call you** based on the skill definition - you don't manually invoke anything.
+**Claude decides:**
+- When to call you (based on skill definition)
+- What question to ask
+- How to interpret your response
+- What to do next
+
+**The tool only handles:** Voice ↔ Text conversion (cheap, simple, no intelligence needed)
 
 ## Prerequisites
 
@@ -76,10 +89,14 @@ curl -fsSL https://bun.sh/install | bash
 2. Get a phone number with **voice capabilities**
 3. Note your **Account SID** and **Auth Token** from the console
 
-### 3. OpenAI Account (for voice AI)
+### 3. OpenAI Account (for voice conversion only)
 1. Sign up at [platform.openai.com](https://platform.openai.com)
 2. Create an **API key**
-3. Ensure access to **GPT-4 Realtime API** (check your usage limits)
+3. Ensure you have access to:
+   - **Whisper API** (speech-to-text)
+   - **TTS API** (text-to-speech)
+
+Note: We're NOT using GPT-4 Realtime API - that's expensive and redundant!
 
 ### 4. Public URL (for webhooks)
 - **Production**: Use your domain with HTTPS
@@ -345,14 +362,31 @@ chmod +x install.sh
 
 ## Cost Estimates
 
-**Per call:**
-- Twilio: ~$0.01-0.02 per minute
-- OpenAI Realtime API: ~$0.06/min (input) + ~$0.24/min (output)
-- **Total: ~$0.30-0.40 per minute**
+**Per-minute costs:**
+- **Twilio** (phone call): ~$0.01-0.02/min
+- **Whisper API** (speech-to-text): ~$0.006/min
+- **OpenAI TTS** (text-to-speech): ~$0.03-0.05/min
+- **Total: ~$0.05-0.08/min**
 
-**Typical 2-minute call: $0.60-0.80**
+**Typical 2-minute call: $0.10-0.16** 🎉
 
-Monitor usage in:
+### Cost Breakdown
+
+This implementation is **6x cheaper** than the original design by eliminating the expensive GPT-4 Realtime API ($0.30/min):
+
+**Old approach:**
+- Used OpenAI Realtime API for everything
+- Cost: $0.30-0.40/min
+- Had redundant AI (GPT-4 + Claude)
+
+**New approach:**
+- **Claude Code provides ALL intelligence** (you already have it!)
+- Tool only does voice ↔ text conversion
+- Whisper for STT: $0.006/min
+- OpenAI TTS for voice: ~$0.04/min
+- Cost: $0.05-0.08/min
+
+Monitor usage:
 - Twilio Console: [console.twilio.com](https://console.twilio.com)
 - OpenAI Dashboard: [platform.openai.com/usage](https://platform.openai.com/usage)
 
