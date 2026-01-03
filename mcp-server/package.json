@@ -1,16 +1,36 @@
 {
-  "name": "@hey-boss/mcp-server",
+  "name": "hey-boss-mcp",
   "version": "2.0.0",
-  "description": "MCP server for phone call input - Claude Code controls the conversation",
+  "description": "Phone call input for Claude Code - Claude calls you when it needs your input",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "hey-boss-mcp": "./dist/index.js"
+    "hey-boss-mcp": "dist/index.js"
   },
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "bun build src/index.ts --outdir dist --target node --format esm",
     "dev": "bun --watch src/index.ts",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "prepublishOnly": "bun run build"
+  },
+  "keywords": [
+    "claude",
+    "claude-code",
+    "mcp",
+    "phone",
+    "voice",
+    "twilio"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ZeframLou/hey-boss.git"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.4",

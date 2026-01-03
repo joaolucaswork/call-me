@@ -1,14 +1,15 @@
 {
   "name": "hey-boss",
-  "version": "1.0.0",
-  "description": "Phone call input tool for Claude Code - enables Claude to call you when it needs your input",
+  "version": "2.0.0",
+  "description": "Phone call input for Claude Code - Claude calls you when it needs your input",
   "author": "Hey Boss Contributors",
   "license": "MIT",
   "repository": "https://github.com/ZeframLou/hey-boss",
   "mcp-servers": [
     {
       "name": "hey-boss",
-      "path": "./mcp-server/dist/index.js",
+      "command": "npx",
+      "args": ["-y", "hey-boss-mcp"],
       "transport": "stdio",
       "env": {
         "TWILIO_ACCOUNT_SID": "",
@@ -23,11 +24,5 @@
   ],
   "requirements": {
     "node": ">=18.0.0"
-  },
-  "setup": {
-    "instructions": "See README.md for detailed setup instructions. You'll need Twilio and OpenAI accounts.",
-    "commands": [
-      "cd mcp-server && bun install && bun run build"
-    ]
   }
 }
