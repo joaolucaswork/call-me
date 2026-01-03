@@ -269,37 +269,104 @@ User: "Test the phone call tool by calling me about what color the submit button
 Claude: *invokes call_user_for_input with the question*
 ```
 
-## Available Tool
+## Available Tools
 
-Once installed, Claude Code will have access to:
+Once installed, Claude Code will have access to three tools for managing phone conversations:
 
-### `call_user_for_input`
+### 1. `initiate_call`
 
-**Description:** Call the user on the phone to get input, clarification, or decision.
+Start a new phone call with the user.
 
 **Parameters:**
-- `question` (string, required): What Claude needs to communicate
-- `urgency` (string, optional): "normal" or "high" (default: "normal")
+- `message` (string, required): What you want to say to the user
 
 **Returns:**
-- Transcript of the user's response
-- Call duration
-- Call status (completed/failed/timeout)
+- `call_id`: ID for continuing/ending this call
+- `response`: User's response to your initial message
 
 **Example:**
 ```typescript
-const result = await call_user_for_input({
-  question: "Should I use REST or GraphQL for the new API? REST is simpler but GraphQL gives more flexibility.",
-  urgency: "normal"
+const result = await initiate_call({
+  message: "Hey, I'm working on the authentication system. Should I use session-based auth or JWT tokens?"
 });
 
 // Result:
 // {
-//   transcript: "Use REST for now. We can migrate to GraphQL later if needed...",
-//   duration: 45,
-//   status: "completed"
+//   callId: "call-1",
+//   response: "Use JWT, we'll need it for mobile apps later"
 // }
 ```
+
+### 2. `continue_call`
+
+Continue an active call with a follow-up message.
+
+**Parameters:**
+- `call_id` (string, required): The call ID from initiate_call
+- `message` (string, required): Your follow-up message or question
+
+**Returns:**
+- User's response to your message
+
+**Example:**
+```typescript
+const response = await continue_call({
+  call_id: "call-1",
+  message: "Got it. Should I enable refresh tokens from the start?"
+});
+
+// Result: "Yes, that would be good"
+```
+
+### 3. `end_call`
+
+End an active call with a closing message.
+
+**Parameters:**
+- `call_id` (string, required): The call ID from initiate_call
+- `message` (string, required): Your closing message
+
+**Example:**
+```typescript
+await end_call({
+  call_id: "call-1",
+  message: "Sounds good, I'll get started on that. Have a great day!"
+});
+```
+
+## Example Multi-Turn Conversation
+
+Here's what a natural conversation looks like:
+
+```typescript
+// Start the call
+const { callId, response } = await initiate_call({
+  message: "I'm refactoring the database layer. Should I use PostgreSQL or MongoDB?"
+});
+// User says: "PostgreSQL, we already have it set up"
+
+// Follow up based on their answer
+const response2 = await continue_call({
+  call_id: callId,
+  message: "Got it, PostgreSQL. Should I set up connection pooling from the start?"
+});
+// User says: "Yes, definitely. Use a pool size of 20"
+
+// Another follow-up
+const response3 = await continue_call({
+  call_id: callId,
+  message: "Perfect. One more thing - should I add read replicas support now or later?"
+});
+// User says: "Later is fine, we don't need it yet"
+
+// Natural ending
+await end_call({
+  call_id: callId,
+  message: "Sounds good! I'll implement PostgreSQL with connection pooling, and we'll add read replicas when needed. I'll get started on that now. Have a great day!"
+});
+```
+
+**The conversation flows naturally** - you control every turn, can ask as many follow-ups as needed, and end with a natural goodbye.
 
 ## Skill Auto-Invocation
 
