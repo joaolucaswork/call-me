@@ -1,96 +1,96 @@
 # Phone Call Input Skill
 
 ## Description
-Enables Claude Code to call the user on the phone when input, clarification, or real-time discussion is needed during a task.
+Enables Claude Code to call the user on the phone for real-time voice conversations. Use this when you need input, want to report on completed work, or need to discuss next steps.
 
-## When to use this skill
+## When to Use This Skill
 
-Use this skill when:
-- You need **real-time voice communication** with the user
-- A decision requires **complex explanation** that's easier to discuss verbally
-- The user needs to provide **detailed context** that would be cumbersome to type
+**Use this skill when:**
+- You've **completed a significant task** and want to report status and ask what to do next
+- You need **real-time voice input** for complex decisions
+- A question requires **back-and-forth discussion** to fully understand
 - You're **blocked** and need urgent clarification to proceed
-- The question is **time-sensitive** and requires immediate attention
-- Text interaction is **insufficient** for the type of input needed
+- The user needs to provide **detailed context** that's easier to explain verbally
+- You want to **celebrate a milestone** or walk the user through completed work
 
-## When NOT to use this skill
-
-Do NOT use this skill for:
+**Do NOT use this skill for:**
 - Simple yes/no questions (use text)
-- Questions that can wait for async response
-- Minor clarifications
+- Routine status updates that don't require discussion
 - Information the user has already provided
-- Routine status updates
+- Questions that can wait for async text response
 
-## How to use
+## Available Tools
 
-Invoke the `call_user_for_input` tool with:
+### `initiate_call`
+Start a new phone call with the user.
 
-### Parameters:
-- **question** (required): Clear, specific description of what you need
-  - Be concise but complete
-  - Provide context about why you need this information
-  - Example: "I need to decide between using PostgreSQL or MongoDB for the new analytics feature. PostgreSQL would be easier to integrate with the existing stack, but MongoDB might handle the time-series data better. Which would you prefer?"
+**Parameters:**
+- `message` (string, required): What you want to say to the user
 
-- **urgency** (optional): "normal" or "high"
-  - Use "normal" for most cases
-  - Use "high" only for critical, blocking decisions
+**Returns:** Call ID and user's response
 
-### Example usage:
+### `continue_call`
+Continue an active call with a follow-up message.
+
+**Parameters:**
+- `call_id` (string, required): The call ID from initiate_call
+- `message` (string, required): Your follow-up message
+
+**Returns:** User's response
+
+### `end_call`
+End an active call with a closing message.
+
+**Parameters:**
+- `call_id` (string, required): The call ID from initiate_call
+- `message` (string, required): Your closing message (say goodbye!)
+
+## Example: Status Report After Completing Work
 
 ```typescript
-// When you need architectural guidance
-const response = await call_user_for_input({
-  question: "I'm implementing the payment system. Should I use Stripe or PayPal? Stripe has better API docs but PayPal might be more familiar to users.",
-  urgency: "normal"
+// You just finished implementing a feature
+const { callId, response } = await initiate_call({
+  message: "Hey! I just finished implementing the user authentication system. I added JWT tokens, refresh token support, and password reset functionality. Want me to walk you through what I built, or should I move on to the next task?"
 });
+// User responds: "That sounds great! What's the next priority?"
 
-// When you're blocked
-const response = await call_user_for_input({
-  question: "The database migration is failing with a foreign key constraint error. I need to know if it's safe to drop the constraint on the users table, or should I take a different approach?",
-  urgency: "high"
+await end_call({
+  call_id: callId,
+  message: "Perfect! I'll move on to the API rate limiting feature next. I'll call you when that's done. Talk soon!"
 });
 ```
 
-## What happens
+## Example: Multi-Turn Decision Making
 
-1. User receives a phone call
-2. AI voice assistant explains what Claude Code needs
-3. User responds verbally
-4. AI asks clarifying questions if needed
-5. Call ends when complete answer is received
-6. Full transcript returns to Claude Code
-7. Claude Code continues working with the user's input
+```typescript
+// Start the call
+const { callId, response } = await initiate_call({
+  message: "I'm setting up the database layer. Should I use PostgreSQL or MongoDB for this project?"
+});
+// User says: "PostgreSQL, we already have it set up"
 
-## Outputs
+// Follow up based on their answer
+const response2 = await continue_call({
+  call_id: callId,
+  message: "Got it. Should I set up connection pooling from the start?"
+});
+// User says: "Yes, use a pool size of 20"
 
-The tool returns:
-- **transcript**: Full text of the user's response
-- **duration**: Call length in seconds
-- **status**: "completed", "failed", or "timeout"
+// Natural ending
+await end_call({
+  call_id: callId,
+  message: "Sounds good! PostgreSQL with connection pooling, pool size 20. I'll get started on that now!"
+});
+```
 
-## Best practices
+## Best Practices
 
-- **Be specific** in your question - the clearer you are, the better response you'll get
-- **Provide context** - explain why you need the information
-- **Offer options** when applicable - makes it easier for user to decide
-- **Use sparingly** - phone calls are interruptive, reserve for when truly needed
-- **Handle errors gracefully** - if the call fails, fall back to text interaction
+1. **Be conversational** - Talk naturally, not like a robot
+2. **Provide context** - Explain what you've done and why you're calling
+3. **Offer options** - Make it easy for the user to decide
+4. **End gracefully** - Always say goodbye with a clear next step
+5. **Use for meaningful moments** - Task completion, important decisions, blockers
 
-## Error handling
+## Configuration Required
 
-If the call fails:
-1. Check that MCP server is configured correctly
-2. Verify environment variables are set
-3. Fall back to asking via text
-4. Log the error for debugging
-
-## Configuration required
-
-Before using this skill, ensure:
-1. Hey Boss MCP server is installed and configured
-2. Twilio account credentials are set
-3. OpenAI API key is configured
-4. Public URL is accessible (use ngrok for development)
-
-See the main README.md for setup instructions.
+Before using this skill, ensure the Hey Boss MCP server is installed. See README.md for setup.
