@@ -8,20 +8,15 @@ You start Claude on a complex task and walk away. Maybe you're making coffee, ta
 
 ### Example Scenarios
 
-**Long-running migrations**
-> "I'm running the database migration. It'll take about 30 minutes. Go grab lunch - I'll call you when it's done or if something goes wrong."
+**Long-running tasks** — You kick off a database migration that takes 30 minutes. Instead of watching the terminal, you go make lunch. Claude calls when it's done or if something breaks.
 
-**Architecture decisions mid-task**
-> "I've been refactoring the auth system and found two approaches: we could use JWT with refresh tokens, or switch to session-based auth. Each has trade-offs. Want me to call you to discuss?"
+**Architecture decisions** — While refactoring the auth system, Claude discovers two viable approaches with different trade-offs. Rather than picking one arbitrarily, Claude calls to walk through the options.
 
-**Blocked by unclear requirements**
-> "I'm implementing the payment flow but the spec doesn't cover what happens when a card is declined. I'll call you to clarify before proceeding."
+**Blocked by unclear requirements** — The spec doesn't cover edge cases in the payment flow. Claude calls to clarify what should happen when a card is declined before writing code that might be wrong.
 
-**Multi-step deployments**
-> "Deployment to staging is complete and tests are passing. Ready to push to production - calling you for the go-ahead."
+**Deployment approvals** — Staging deployment succeeds and tests pass. Claude calls for the go-ahead before pushing to production.
 
-**Research complete, ready for review**
-> "I've analyzed the three API options you mentioned. I have a recommendation but want to walk you through the trade-offs. Calling now."
+**Research summaries** — After analyzing three API options, Claude calls to explain the recommendation and trade-offs rather than writing a wall of text you'll skim later.
 
 ### How It Changes Your Workflow
 
