@@ -101,6 +101,13 @@ async function main() {
           case '/api/end_call':
             result = await callManager!.endCall(data.call_id, data.message);
             break;
+          case '/api/set_user_number':
+            callManager!.setUserPhoneNumber(data.phone_number);
+            result = { success: true, phone_number: callManager!.getUserPhoneNumber() };
+            break;
+          case '/api/get_user_number':
+            result = { phone_number: callManager!.getUserPhoneNumber() };
+            break;
           default:
             res.writeHead(404);
             res.end('Not found');

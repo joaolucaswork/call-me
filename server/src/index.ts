@@ -110,6 +110,17 @@ async function main() {
             required: ['call_id', 'message'],
           },
         },
+        {
+          name: 'set_user_number',
+          description: 'Change the phone number to call. Takes effect immediately for the next call.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              phone_number: { type: 'string', description: 'Phone number in E.164 format (e.g., +5581999999999)' },
+            },
+            required: ['phone_number'],
+          },
+        },
       ],
     };
   });
@@ -153,6 +164,15 @@ async function main() {
 
         return {
           content: [{ type: 'text', text: `Call ended. Duration: ${result.durationSeconds}s` }],
+        };
+      }
+
+      if (request.params.name === 'set_user_number') {
+        const { phone_number } = request.params.arguments as { phone_number: string };
+        const result = await apiCall('/set_user_number', { phone_number }) as { phone_number: string };
+
+        return {
+          content: [{ type: 'text', text: `Phone number updated to: ${result.phone_number}` }],
         };
       }
 

@@ -111,6 +111,15 @@ export class CallManager {
     this.config = config;
   }
 
+  setUserPhoneNumber(phoneNumber: string): void {
+    this.config.userPhoneNumber = phoneNumber;
+    console.error(`[Config] User phone number updated to: ${phoneNumber}`);
+  }
+
+  getUserPhoneNumber(): string {
+    return this.config.userPhoneNumber;
+  }
+
   startServer(): void {
     this.httpServer = createServer((req, res) => {
       const url = new URL(req.url!, `http://${req.headers.host}`);

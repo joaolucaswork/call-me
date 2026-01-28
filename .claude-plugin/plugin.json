@@ -1,6 +1,6 @@
 {
   "name": "callme",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Claude calls you on the phone when it needs your input or wants to report progress",
   "author": {
     "name": "ZeframLou",
