@@ -9,11 +9,13 @@ import type { PhoneProvider, TTSProvider, RealtimeSTTProvider, ProviderRegistry 
 import { TelnyxPhoneProvider } from './phone-telnyx.js';
 import { TwilioPhoneProvider } from './phone-twilio.js';
 import { OpenAITTSProvider } from './tts-openai.js';
+import { ElevenLabsTTSProvider } from './tts-elevenlabs.js';
 import { OpenAIRealtimeSTTProvider } from './stt-openai-realtime.js';
 
 export * from './types.js';
 
 export type PhoneProviderType = 'telnyx' | 'twilio';
+export type TTSProviderType = 'openai' | 'elevenlabs';
 
 export interface ProviderConfig {
   // Phone provider selection
@@ -30,9 +32,20 @@ export interface ProviderConfig {
   // Get from: Mission Control > Account Settings > Keys & Credentials > Public Key
   telnyxPublicKey?: string;
 
-  // OpenAI (TTS + STT)
+  // TTS provider selection
+  ttsProvider: TTSProviderType;
+
+  // OpenAI API key (used for STT, and TTS if ttsProvider=openai)
   openaiApiKey: string;
+
+  // ElevenLabs API key (required if ttsProvider=elevenlabs)
+  elevenlabsApiKey?: string;
+
+  // TTS settings
   ttsVoice?: string;
+  ttsModel?: string;
+
+  // STT settings
   sttModel?: string;
   sttSilenceDurationMs?: number;
 }
@@ -45,14 +58,23 @@ export function loadProviderConfig(): ProviderConfig {
   // Default to telnyx if not specified
   const phoneProvider = (process.env.CALLME_PHONE_PROVIDER || 'telnyx') as PhoneProviderType;
 
+  // Default to openai for TTS if not specified
+  const ttsProvider = (process.env.CALLME_TTS_PROVIDER || 'openai') as TTSProviderType;
+
+  // Default voice depends on provider
+  const defaultVoice = ttsProvider === 'elevenlabs' ? 'onwK4e9ZLuTAKqWW03F9' : 'onyx';
+
   return {
     phoneProvider,
     phoneAccountSid: process.env.CALLME_PHONE_ACCOUNT_SID || '',
     phoneAuthToken: process.env.CALLME_PHONE_AUTH_TOKEN || '',
     phoneNumber: process.env.CALLME_PHONE_NUMBER || '',
     telnyxPublicKey: process.env.CALLME_TELNYX_PUBLIC_KEY,
+    ttsProvider,
     openaiApiKey: process.env.CALLME_OPENAI_API_KEY || '',
-    ttsVoice: process.env.CALLME_TTS_VOICE || 'onyx',
+    elevenlabsApiKey: process.env.CALLME_ELEVENLABS_API_KEY,
+    ttsVoice: process.env.CALLME_TTS_VOICE || defaultVoice,
+    ttsModel: process.env.CALLME_TTS_MODEL,
     sttModel: process.env.CALLME_STT_MODEL || 'gpt-4o-transcribe',
     sttSilenceDurationMs,
   };
@@ -77,10 +99,21 @@ export function createPhoneProvider(config: ProviderConfig): PhoneProvider {
 }
 
 export function createTTSProvider(config: ProviderConfig): TTSProvider {
+  if (config.ttsProvider === 'elevenlabs') {
+    const provider = new ElevenLabsTTSProvider();
+    provider.initialize({
+      apiKey: config.elevenlabsApiKey,
+      voice: config.ttsVoice,
+      model: config.ttsModel,
+    });
+    return provider;
+  }
+
   const provider = new OpenAITTSProvider();
   provider.initialize({
     apiKey: config.openaiApiKey,
     voice: config.ttsVoice,
+    model: config.ttsModel,
   });
   return provider;
 }
@@ -124,7 +157,10 @@ export function validateProviderConfig(config: ProviderConfig): string[] {
     errors.push('Missing CALLME_PHONE_NUMBER');
   }
   if (!config.openaiApiKey) {
-    errors.push('Missing CALLME_OPENAI_API_KEY');
+    errors.push('Missing CALLME_OPENAI_API_KEY (required for STT)');
+  }
+  if (config.ttsProvider === 'elevenlabs' && !config.elevenlabsApiKey) {
+    errors.push('Missing CALLME_ELEVENLABS_API_KEY (required when TTS provider is elevenlabs)');
   }
 
   return errors;
