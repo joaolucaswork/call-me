@@ -12,20 +12,8 @@
   "skills": "./skills",
   "mcpServers": {
     "callme": {
-      "command": "bun",
-      "args": ["run", "--cwd", "${CLAUDE_PLUGIN_ROOT}/server", "start"],
-      "env": {
-        "CALLME_PHONE_ACCOUNT_SID": "${CALLME_PHONE_ACCOUNT_SID}",
-        "CALLME_PHONE_AUTH_TOKEN": "${CALLME_PHONE_AUTH_TOKEN}",
-        "CALLME_PHONE_NUMBER": "${CALLME_PHONE_NUMBER}",
-        "CALLME_USER_PHONE_NUMBER": "${CALLME_USER_PHONE_NUMBER}",
-        "CALLME_OPENAI_API_KEY": "${CALLME_OPENAI_API_KEY}",
-        "CALLME_TTS_VOICE": "${CALLME_TTS_VOICE:-onyx}",
-        "CALLME_NGROK_AUTHTOKEN": "${CALLME_NGROK_AUTHTOKEN}",
-        "CALLME_PORT": "${CALLME_PORT:-3333}",
-        "CALLME_TRANSCRIPT_TIMEOUT_MS": "${CALLME_TRANSCRIPT_TIMEOUT_MS:-180000}",
-        "CALLME_STT_SILENCE_DURATION_MS": "${CALLME_STT_SILENCE_DURATION_MS:-800}"
-      }
+      "command": "bash",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/server/start.sh"]
     }
   }
 }

@@ -22,8 +22,8 @@ module.exports = {
   apps: [
     {
       name: 'ngrok',
-      script: 'ngrok',
-      args: 'http 3333 --domain=helena-call.ngrok.app',
+      script: 'bash',
+      args: '-c "pkill -x ngrok 2>/dev/null; sleep 2; exec ngrok http 3333 --domain=helena-call.ngrok.app"',
       autorestart: true,
       max_restarts: 10,
       restart_delay: 5000,
