@@ -19,7 +19,8 @@ Start a task, walk away. Your phone/watch rings when Claude is done, stuck, or n
 
 You'll need:
 - **Phone provider**: [Telnyx](https://telnyx.com) or [Twilio](https://twilio.com)
-- **OpenAI API key**: For speech-to-text and text-to-speech
+- **OpenAI API key**: For speech-to-text (required) and text-to-speech (optional)
+- **ElevenLabs API key** (optional): For higher quality multilingual text-to-speech
 - **ngrok account**: Free at [ngrok.com](https://ngrok.com) (for webhook tunneling)
 
 ### 2. Set Up Phone Provider
@@ -77,7 +78,8 @@ Add these to `~/.claude/settings.json` (recommended) or export them in your shel
     "CALLME_PHONE_NUMBER": "+15551234567",
     "CALLME_USER_PHONE_NUMBER": "+15559876543",
     "CALLME_OPENAI_API_KEY": "sk-...",
-    "CALLME_NGROK_AUTHTOKEN": "your-ngrok-token"
+    "CALLME_NGROK_AUTHTOKEN": "your-ngrok-token",
+    "CALLME_TTS_PROVIDER": "openai"
   }
 }
 ```
@@ -91,25 +93,43 @@ Add these to `~/.claude/settings.json` (recommended) or export them in your shel
 | `CALLME_PHONE_AUTH_TOKEN` | Telnyx API Key or Twilio Auth Token |
 | `CALLME_PHONE_NUMBER` | Phone number Claude calls from (E.164 format) |
 | `CALLME_USER_PHONE_NUMBER` | Your phone number to receive calls |
-| `CALLME_OPENAI_API_KEY` | OpenAI API key (for TTS and realtime STT) |
+| `CALLME_OPENAI_API_KEY` | OpenAI API key (required for realtime STT, optional for TTS) |
 | `CALLME_NGROK_AUTHTOKEN` | ngrok auth token for webhook tunneling |
 
 #### Optional Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CALLME_TTS_VOICE` | `onyx` | OpenAI voice: alloy, echo, fable, onyx, nova, shimmer |
+| `CALLME_TTS_PROVIDER` | `openai` | TTS provider: `openai` or `elevenlabs` |
+| `CALLME_TTS_VOICE` | `onyx` | Voice ID (OpenAI: alloy, echo, fable, onyx, nova, shimmer) |
+| `CALLME_ELEVENLABS_API_KEY` | - | ElevenLabs API key (required if using elevenlabs TTS) |
 | `CALLME_PORT` | `3333` | Local HTTP server port |
 | `CALLME_NGROK_DOMAIN` | - | Custom ngrok domain (paid feature) |
 | `CALLME_TRANSCRIPT_TIMEOUT_MS` | `180000` | Timeout for user speech (3 minutes) |
 | `CALLME_STT_SILENCE_DURATION_MS` | `800` | Silence duration to detect end of speech |
 | `CALLME_TELNYX_PUBLIC_KEY` | - | Telnyx public key for webhook signature verification (recommended) |
 
+#### TTS Provider Selection
+
+**OpenAI TTS** (default): Good quality, lower cost, English-optimized.
+
+**ElevenLabs TTS**: Higher quality voices with better multilingual support (Portuguese, Spanish, etc.). Requires separate API key from [elevenlabs.io](https://elevenlabs.io).
+
+To use ElevenLabs:
+```json
+{
+  "env": {
+    "CALLME_TTS_PROVIDER": "elevenlabs",
+    "CALLME_ELEVENLABS_API_KEY": "your-elevenlabs-key",
+    "CALLME_TTS_VOICE": "voice-id-from-elevenlabs"
+  }
+}
+```
+
 ### 4. Install Plugin
 
 ```bash
-/plugin marketplace add ZeframLou/call-me
-/plugin install callme@callme
+/install-github-mcp joaolucaswork/call-me
 ```
 
 Restart Claude Code. Done!
@@ -197,11 +217,13 @@ await end_call({
 | Outbound calls | ~$0.007/min | ~$0.014/min |
 | Phone number | ~$1/month | ~$1.15/month |
 
-Plus OpenAI costs (same for both providers):
-- **Speech-to-text**: ~$0.006/min (Whisper)
-- **Text-to-speech**: ~$0.02/min (TTS)
+Speech services:
+- **Speech-to-text (OpenAI)**: ~$0.006/min
+- **Text-to-speech (OpenAI)**: ~$0.02/min
+- **Text-to-speech (ElevenLabs)**: ~$0.30/1k characters (higher quality, better multilingual support)
 
-**Total**: ~$0.03-0.04/minute of conversation
+**Total with OpenAI TTS**: ~$0.03-0.04/minute
+**Total with ElevenLabs TTS**: varies based on message length
 
 ---
 
