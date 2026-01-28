@@ -18,6 +18,8 @@ module.exports = {
       autorestart: true,
       max_restarts: 10,
       restart_delay: 5000,
+      node_args: '-r dotenv/config',
+      env_file: '.env',
       env: {
         NODE_ENV: 'production',
         CALLME_PUBLIC_URL: 'https://helena-call.ngrok.app',
