@@ -27,17 +27,5 @@
         "CALLME_STT_SILENCE_DURATION_MS": "${CALLME_STT_SILENCE_DURATION_MS:-800}"
       }
     }
-  },
-  "hooks": {
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "prompt",
-            "prompt": "SILENTLY evaluate if you should call the user. ONLY use initiate_call if you completed significant work and need to discuss next steps, or are genuinely blocked. Do NOT output any text - either call or do nothing."
-          }
-        ]
-      }
-    ]
   }
 }

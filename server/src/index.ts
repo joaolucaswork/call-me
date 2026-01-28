@@ -3,44 +3,52 @@
 /**
  * CallMe MCP Server
  *
- * A stdio-based MCP server that lets Claude call you on the phone.
- * Automatically starts ngrok to expose webhooks for phone providers.
+ * A stdio-based MCP server that connects to the CallMe HTTP server.
+ * The HTTP server (with ngrok) should be running separately via PM2.
  */
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import { CallManager, loadServerConfig } from './phone-call.js';
-import { startNgrok, stopNgrok } from './ngrok.js';
+
+const API_PORT = parseInt(process.env.CALLME_API_PORT || '3334', 10);
+const API_BASE = `http://localhost:${API_PORT}/api`;
+
+async function apiCall(endpoint: string, data: Record<string, unknown>): Promise<unknown> {
+  const response = await fetch(`${API_BASE}${endpoint}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ error: response.statusText }));
+    throw new Error((error as { error?: string }).error || 'API request failed');
+  }
+
+  return response.json();
+}
+
+async function checkServerHealth(): Promise<boolean> {
+  try {
+    const response = await fetch(`${API_BASE}/health`, { method: 'POST' });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
 
 async function main() {
-  // Get port for HTTP server
-  const port = parseInt(process.env.CALLME_PORT || '3333', 10);
-
-  // Start ngrok tunnel to get public URL
-  console.error('Starting ngrok tunnel...');
-  let publicUrl: string;
-  try {
-    publicUrl = await startNgrok(port);
-    console.error(`ngrok tunnel: ${publicUrl}`);
-  } catch (error) {
-    console.error('Failed to start ngrok:', error instanceof Error ? error.message : error);
+  // Check if HTTP server is running
+  const serverHealthy = await checkServerHealth();
+  if (!serverHealthy) {
+    console.error('ERROR: CallMe HTTP server is not running!');
+    console.error('Start it with: pm2 start callme');
+    console.error('Or run: bun run server');
     process.exit(1);
   }
 
-  // Load server config with the ngrok URL
-  let serverConfig;
-  try {
-    serverConfig = loadServerConfig(publicUrl);
-  } catch (error) {
-    console.error('Configuration error:', error instanceof Error ? error.message : error);
-    await stopNgrok();
-    process.exit(1);
-  }
-
-  // Create call manager and start HTTP server for webhooks
-  const callManager = new CallManager(serverConfig);
-  callManager.startServer();
+  console.error('Connected to CallMe HTTP server');
 
   // Create stdio MCP server
   const mcpServer = new Server(
@@ -111,7 +119,7 @@ async function main() {
     try {
       if (request.params.name === 'initiate_call') {
         const { message } = request.params.arguments as { message: string };
-        const result = await callManager.initiateCall(message);
+        const result = await apiCall('/initiate_call', { message }) as { callId: string; response: string };
 
         return {
           content: [{
@@ -123,16 +131,16 @@ async function main() {
 
       if (request.params.name === 'continue_call') {
         const { call_id, message } = request.params.arguments as { call_id: string; message: string };
-        const response = await callManager.continueCall(call_id, message);
+        const result = await apiCall('/continue_call', { call_id, message }) as { response: string };
 
         return {
-          content: [{ type: 'text', text: `User's response:\n${response}` }],
+          content: [{ type: 'text', text: `User's response:\n${result.response}` }],
         };
       }
 
       if (request.params.name === 'speak_to_user') {
         const { call_id, message } = request.params.arguments as { call_id: string; message: string };
-        await callManager.speakOnly(call_id, message);
+        await apiCall('/speak_to_user', { call_id, message });
 
         return {
           content: [{ type: 'text', text: `Message spoken: "${message}"` }],
@@ -141,10 +149,10 @@ async function main() {
 
       if (request.params.name === 'end_call') {
         const { call_id, message } = request.params.arguments as { call_id: string; message: string };
-        const { durationSeconds } = await callManager.endCall(call_id, message);
+        const result = await apiCall('/end_call', { call_id, message }) as { durationSeconds: number };
 
         return {
-          content: [{ type: 'text', text: `Call ended. Duration: ${durationSeconds}s` }],
+          content: [{ type: 'text', text: `Call ended. Duration: ${result.durationSeconds}s` }],
         };
       }
 
@@ -162,22 +170,7 @@ async function main() {
   const transport = new StdioServerTransport();
   await mcpServer.connect(transport);
 
-  console.error('');
-  console.error('CallMe MCP server ready');
-  console.error(`Phone: ${serverConfig.phoneNumber} -> ${serverConfig.userPhoneNumber}`);
-  console.error(`Providers: phone=${serverConfig.providers.phone.name}, tts=${serverConfig.providers.tts.name}, stt=${serverConfig.providers.stt.name}`);
-  console.error('');
-
-  // Graceful shutdown
-  const shutdown = async () => {
-    console.error('\nShutting down...');
-    callManager.shutdown();
-    await stopNgrok();
-    process.exit(0);
-  };
-
-  process.on('SIGINT', shutdown);
-  process.on('SIGTERM', shutdown);
+  console.error('CallMe MCP ready');
 }
 
 main().catch((error) => {
