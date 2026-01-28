@@ -35,7 +35,7 @@ export interface PhoneProvider {
   /**
    * Get XML response for connecting media stream (used in webhooks)
    */
-  getStreamConnectXml(streamUrl: string): string;
+  getStreamConnectXml(streamUrl: string, statusCallbackUrl?: string): string;
 }
 
 export interface PhoneConfig {

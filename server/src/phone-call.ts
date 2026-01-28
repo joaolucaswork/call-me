@@ -1,5 +1,8 @@
 import WebSocket, { WebSocketServer } from 'ws';
 import { createServer, IncomingMessage, ServerResponse } from 'http';
+import { readFileSync, existsSync } from 'fs';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
 import {
   loadProviderConfig,
   createProviders,
@@ -37,6 +40,34 @@ export interface ServerConfig {
   providers: ProviderRegistry;
   providerConfig: ProviderConfig;  // For webhook signature verification
   transcriptTimeoutMs: number;
+}
+
+/**
+ * Read a value directly from the .env file (bypasses process.env cache)
+ */
+function readEnvFile(key: string): string | undefined {
+  try {
+    const __dirname = dirname(fileURLToPath(import.meta.url));
+    const envPath = join(__dirname, '..', '.env');
+    if (!existsSync(envPath)) return undefined;
+
+    const content = readFileSync(envPath, 'utf8');
+    for (const line of content.split('\n')) {
+      const trimmed = line.trim();
+      if (trimmed && !trimmed.startsWith('#')) {
+        const eqIndex = trimmed.indexOf('=');
+        if (eqIndex > 0) {
+          const envKey = trimmed.substring(0, eqIndex).trim();
+          if (envKey === key) {
+            return trimmed.substring(eqIndex + 1).trim();
+          }
+        }
+      }
+    }
+  } catch {
+    // Fall back to process.env
+  }
+  return undefined;
 }
 
 export function loadServerConfig(publicUrl: string): ServerConfig {
@@ -92,6 +123,11 @@ export class CallManager {
       if (url.pathname === '/health') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ status: 'ok', activeCalls: this.activeCalls.size }));
+        return;
+      }
+
+      if (url.pathname === '/stream-status') {
+        this.handleStreamStatus(req, res);
         return;
       }
 
@@ -320,7 +356,9 @@ export class CallManager {
     const callSid = params.get('CallSid');
     const callStatus = params.get('CallStatus');
 
-    console.error(`Twilio webhook: CallSid=${callSid}, CallStatus=${callStatus}`);
+    const errorCode = params.get('ErrorCode');
+    const errorMessage = params.get('ErrorMessage');
+    console.error(`Twilio webhook: CallSid=${callSid}, CallStatus=${callStatus}${errorCode ? `, Error=${errorCode}: ${errorMessage}` : ''}`);
 
     // Handle call status updates
     if (callStatus === 'completed' || callStatus === 'busy' || callStatus === 'no-answer' || callStatus === 'failed') {
@@ -356,9 +394,32 @@ export class CallManager {
       }
     }
 
-    const xml = this.config.providers.phone.getStreamConnectXml(streamUrl);
+    const statusCallbackUrl = `${this.config.publicUrl}/stream-status`;
+    const xml = this.config.providers.phone.getStreamConnectXml(streamUrl, statusCallbackUrl);
+    console.error(`[TwiML] Returning stream connect XML with URL: ${streamUrl}`);
     res.writeHead(200, { 'Content-Type': 'application/xml' });
     res.end(xml);
+  }
+
+  private handleStreamStatus(req: IncomingMessage, res: ServerResponse): void {
+    let body = '';
+    req.on('data', (chunk) => { body += chunk; });
+    req.on('end', () => {
+      try {
+        const params = new URLSearchParams(body);
+        const streamSid = params.get('StreamSid');
+        const streamStatus = params.get('StreamStatus');
+        const errorCode = params.get('ErrorCode');
+        const errorMessage = params.get('ErrorMessage');
+        console.error(`[StreamStatus] StreamSid=${streamSid}, Status=${streamStatus}${errorCode ? `, Error=${errorCode}: ${errorMessage}` : ''}`);
+        // Log all params for debugging
+        console.error(`[StreamStatus] All params: ${body}`);
+      } catch (error) {
+        console.error('[StreamStatus] Error parsing:', error);
+      }
+      res.writeHead(200);
+      res.end();
+    });
   }
 
   private async handleTelnyxWebhook(event: any, res: ServerResponse): Promise<void> {
@@ -431,6 +492,9 @@ export class CallManager {
   async initiateCall(message: string): Promise<{ callId: string; response: string }> {
     const callId = `call-${++this.currentCallId}-${Date.now()}`;
 
+    // Read phone number dynamically from .env file (allows changing without restart)
+    const userPhoneNumber = readEnvFile('CALLME_USER_PHONE_NUMBER') || this.config.userPhoneNumber;
+
     // Create realtime transcription session via provider
     const sttSession = this.config.providers.stt.createSession();
     await sttSession.connect();
@@ -442,7 +506,7 @@ export class CallManager {
     const state: CallState = {
       callId,
       callControlId: null,
-      userPhoneNumber: this.config.userPhoneNumber,
+      userPhoneNumber,
       ws: null,
       streamSid: null,
       streamingReady: false,
@@ -457,7 +521,7 @@ export class CallManager {
 
     try {
       const callControlId = await this.config.providers.phone.initiateCall(
-        this.config.userPhoneNumber,
+        userPhoneNumber,
         this.config.phoneNumber,
         `${this.config.publicUrl}/twiml`
       );
@@ -466,7 +530,7 @@ export class CallManager {
       this.callControlIdToCallId.set(callControlId, callId);
       this.wsTokenToCallId.set(wsToken, callId);
 
-      console.error(`Call initiated: ${callControlId} -> ${this.config.userPhoneNumber}`);
+      console.error(`Call initiated: ${callControlId} -> ${userPhoneNumber}`);
 
       // Start TTS generation in parallel with waiting for connection
       // This reduces latency by generating audio while Twilio establishes the stream

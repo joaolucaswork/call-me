@@ -45,15 +45,20 @@ export class TwilioPhoneProvider implements PhoneProvider {
           'Authorization': `Basic ${auth}`,
           'Content-Type': 'application/x-www-form-urlencoded',
         },
-        body: new URLSearchParams({
-          To: to,
-          From: from,
-          Url: webhookUrl,
-          StatusCallback: webhookUrl,  // Receive call status updates (answered, completed, etc.)
-          StatusCallbackEvent: 'initiated ringing answered completed',
-          MachineDetection: 'Enable',
-          MachineDetectionTimeout: '5',
-        }).toString(),
+        body: (() => {
+          const params = new URLSearchParams();
+          params.append('To', to);
+          params.append('From', from);
+          params.append('Url', webhookUrl);
+          params.append('StatusCallback', webhookUrl);
+          params.append('StatusCallbackEvent', 'initiated');
+          params.append('StatusCallbackEvent', 'ringing');
+          params.append('StatusCallbackEvent', 'answered');
+          params.append('StatusCallbackEvent', 'completed');
+          params.append('MachineDetection', 'Enable');
+          params.append('MachineDetectionTimeout', '5');
+          return params.toString();
+        })(),
       }
     );
 
@@ -110,15 +115,15 @@ export class TwilioPhoneProvider implements PhoneProvider {
    * Get TwiML response for connecting media stream
    * This is called when Twilio requests the webhook URL after call is answered
    */
-  getStreamConnectXml(streamUrl: string): string {
-    // <Connect><Stream> creates a bidirectional stream
-    // - Automatically receives only inbound audio (user's voice) for STT
-    // - Allows sending audio back via WebSocket media messages
-    // Note: "track" attribute is NOT valid for <Connect><Stream>, only for <Start><Stream>
+  getStreamConnectXml(streamUrl: string, statusCallbackUrl?: string): string {
+    // Using <Connect><Stream> for bidirectional audio
+    // <Start><Stream> is unidirectional (receive-only) - cannot send audio back
+    // <Connect><Stream> allows both sending and receiving audio via WebSocket
+    const statusAttr = statusCallbackUrl ? ` statusCallback="${statusCallbackUrl}" statusCallbackMethod="POST"` : '';
     return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Connect>
-    <Stream url="${streamUrl}" />
+    <Stream url="${streamUrl}"${statusAttr} />
   </Connect>
 </Response>`;
   }
