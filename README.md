@@ -4,6 +4,14 @@
 
 Start a task, walk away. Your phone/watch rings when Claude is done, stuck, or needs a decision.
 
+## New Improvements
+
+- **Auto-start HTTP server** — MCP server now spawns the HTTP server automatically. No more PM2 or manual setup.
+- **Session tracking** — Multiple Claude sessions share one HTTP server; auto-shuts down when all disconnect.
+- **ElevenLabs TTS** — Higher quality multilingual text-to-speech as an alternative to OpenAI.
+
+---
+
 <img src="./call-me-comic-min.png" width="800" alt="CallMe comic strip">
 
 - **Minimal plugin** - Does one thing: call you on the phone. No crazy setups.
