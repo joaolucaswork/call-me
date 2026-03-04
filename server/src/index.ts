@@ -4,15 +4,40 @@
  * CallMe MCP Server
  *
  * A stdio-based MCP server that connects to the CallMe HTTP server.
- * The HTTP server (with ngrok) should be running separately via PM2.
+ * Auto-starts the HTTP server if it's not already running.
  */
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { spawn, type Subprocess } from 'bun';
+import { resolve, dirname } from 'path';
+import { fileURLToPath } from 'url';
 
 const API_PORT = parseInt(process.env.CALLME_API_PORT || '3334', 10);
 const API_BASE = `http://localhost:${API_PORT}/api`;
+
+let httpServerProcess: Subprocess | null = null;
+let sessionRegistered = false;
+
+async function notifyConnect(): Promise<void> {
+  try {
+    await fetch(`${API_BASE}/connect`, { method: 'POST' });
+    sessionRegistered = true;
+  } catch {
+    // Server might not support session tracking (older version)
+  }
+}
+
+async function notifyDisconnect(): Promise<void> {
+  if (!sessionRegistered) return;
+  try {
+    await fetch(`${API_BASE}/disconnect`, { method: 'POST' });
+  } catch {
+    // Best effort
+  }
+  sessionRegistered = false;
+}
 
 async function apiCall(endpoint: string, data: Record<string, unknown>): Promise<unknown> {
   const response = await fetch(`${API_BASE}${endpoint}`, {
@@ -38,17 +63,80 @@ async function checkServerHealth(): Promise<boolean> {
   }
 }
 
-async function main() {
-  // Check if HTTP server is running
-  const serverHealthy = await checkServerHealth();
-  if (!serverHealthy) {
-    console.error('ERROR: CallMe HTTP server is not running!');
-    console.error('Start it with: pm2 start callme');
-    console.error('Or run: bun run server');
-    process.exit(1);
+/**
+ * Wait for an existing HTTP server to become healthy (another tab may be starting it).
+ * Retries several times with 1s intervals before giving up.
+ */
+async function waitForExistingServer(attempts: number = 5): Promise<boolean> {
+  for (let i = 0; i < attempts; i++) {
+    if (await checkServerHealth()) {
+      return true;
+    }
+    await new Promise(r => setTimeout(r, 1000));
+  }
+  return false;
+}
+
+async function startHttpServer(): Promise<void> {
+  const __dirname = dirname(fileURLToPath(import.meta.url));
+  const httpServerPath = resolve(__dirname, 'http-server.ts');
+
+  console.error('Starting HTTP server...');
+  let processExited = false;
+
+  httpServerProcess = spawn({
+    cmd: ['bun', 'run', httpServerPath],
+    stdout: 'ignore',
+    stderr: 'inherit',
+    env: process.env,
+  });
+
+  // Monitor child process exit (e.g. EADDRINUSE → clean exit)
+  httpServerProcess.exited.then(() => {
+    processExited = true;
+  });
+
+  // Wait for the HTTP server to become healthy
+  const maxAttempts = 30;
+  for (let i = 0; i < maxAttempts; i++) {
+    await new Promise(r => setTimeout(r, 1000));
+    if (await checkServerHealth()) {
+      console.error('HTTP server is ready');
+      return;
+    }
+    // If our child exited (port taken), another server is running — wait for it
+    if (processExited) {
+      console.error('HTTP server process exited (port likely in use), waiting for existing server...');
+      httpServerProcess = null;
+      if (await waitForExistingServer(10)) {
+        console.error('Connected to existing HTTP server');
+        return;
+      }
+      throw new Error('HTTP server process exited and no existing server found');
+    }
   }
 
-  console.error('Connected to CallMe HTTP server');
+  throw new Error('HTTP server failed to start within 30s');
+}
+
+
+async function main() {
+  // Check if HTTP server is already running
+  // Retry a few times first — another tab may be starting it right now
+  if (await checkServerHealth()) {
+    console.error('Connected to existing HTTP server');
+  } else {
+    console.error('HTTP server not found, waiting briefly for another instance...');
+    const foundExisting = await waitForExistingServer(3);
+    if (foundExisting) {
+      console.error('Connected to existing HTTP server');
+    } else {
+      await startHttpServer();
+    }
+  }
+
+  // Register this MCP session with the HTTP server
+  await notifyConnect();
 
   // Create stdio MCP server
   const mcpServer = new Server(
@@ -171,9 +259,22 @@ async function main() {
   await mcpServer.connect(transport);
 
   console.error('CallMe MCP ready');
+
+  // On exit, notify HTTP server that this session is gone
+  const shutdown = async () => {
+    await notifyDisconnect();
+    process.exit(0);
+  };
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
+  process.on('exit', () => {
+    // Sync best-effort disconnect (exit handler can't await)
+    notifyDisconnect();
+  });
 }
 
-main().catch((error) => {
+main().catch(async (error) => {
   console.error('Fatal error:', error);
+  await notifyDisconnect();
   process.exit(1);
 });

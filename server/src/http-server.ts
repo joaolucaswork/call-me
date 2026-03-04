@@ -14,6 +14,11 @@ import { createServer } from 'http';
 // Store call manager globally for API access
 let callManager: CallManager | null = null;
 
+// Track connected MCP sessions
+let connectedSessions = 0;
+let shutdownTimer: ReturnType<typeof setTimeout> | null = null;
+const SHUTDOWN_DELAY_MS = 5000; // Wait 5s after last session disconnects
+
 async function main() {
   const port = parseInt(process.env.CALLME_PORT || '3333', 10);
   const apiPort = parseInt(process.env.CALLME_API_PORT || '3334', 10);
@@ -68,7 +73,35 @@ async function main() {
     // Health check doesn't need POST or body
     if (url.pathname === '/api/health') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ status: 'ok', publicUrl }));
+      res.end(JSON.stringify({ status: 'ok', publicUrl, connectedSessions }));
+      return;
+    }
+
+    // Session tracking endpoints
+    if (url.pathname === '/api/connect') {
+      connectedSessions++;
+      if (shutdownTimer) {
+        clearTimeout(shutdownTimer);
+        shutdownTimer = null;
+      }
+      console.error(`MCP session connected (${connectedSessions} active)`);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ sessions: connectedSessions }));
+      return;
+    }
+
+    if (url.pathname === '/api/disconnect') {
+      connectedSessions = Math.max(0, connectedSessions - 1);
+      console.error(`MCP session disconnected (${connectedSessions} active)`);
+      if (connectedSessions === 0) {
+        console.error(`No active sessions. Shutting down in ${SHUTDOWN_DELAY_MS / 1000}s...`);
+        shutdownTimer = setTimeout(() => {
+          console.error('No sessions reconnected. Shutting down HTTP server.');
+          shutdown();
+        }, SHUTDOWN_DELAY_MS);
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ sessions: connectedSessions }));
       return;
     }
 
@@ -117,20 +150,13 @@ async function main() {
     });
   });
 
-  apiServer.listen(apiPort, () => {
-    console.error(`API server listening on port ${apiPort}`);
-  });
-
-  console.error('');
-  console.error('CallMe HTTP Server ready');
-  console.error(`Phone: ${serverConfig.phoneNumber} -> ${serverConfig.userPhoneNumber}`);
-  console.error(`Webhook: ${publicUrl}/twiml`);
-  console.error(`API: http://localhost:${apiPort}/api/*`);
-  console.error('');
-
   // Graceful shutdown
   const shutdown = async () => {
     console.error('\nShutting down...');
+    if (shutdownTimer) {
+      clearTimeout(shutdownTimer);
+      shutdownTimer = null;
+    }
     callManager?.shutdown();
     apiServer.close();
     if (!usingExternalTunnel) {
@@ -138,6 +164,26 @@ async function main() {
     }
     process.exit(0);
   };
+
+  // Handle port binding errors (e.g. another HTTP server already running)
+  apiServer.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EADDRINUSE') {
+      console.error(`API port ${apiPort} already in use - another server is running`);
+      process.exit(0); // Clean exit so parent MCP process connects to existing server
+    }
+    console.error('API server error:', err);
+    process.exit(1);
+  });
+
+  apiServer.listen(apiPort, () => {
+    console.error(`API server listening on port ${apiPort}`);
+    console.error('');
+    console.error('CallMe HTTP Server ready');
+    console.error(`Phone: ${serverConfig.phoneNumber} -> ${serverConfig.userPhoneNumber}`);
+    console.error(`Webhook: ${publicUrl}/twiml`);
+    console.error(`API: http://localhost:${apiPort}/api/*`);
+    console.error('');
+  });
 
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
