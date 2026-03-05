@@ -236,6 +236,25 @@ export class CallManager {
       });
     });
 
+    this.httpServer.on('error', (err: NodeJS.ErrnoException) => {
+      if (err.code === 'EADDRINUSE') {
+        console.error(`Port ${this.config.port} in use, killing existing process...`);
+        const result = Bun.spawnSync(['lsof', '-ti', `:${this.config.port}`]);
+        const pids = result.stdout.toString().trim().split('\n').filter(Boolean);
+        for (const pid of pids) {
+          try { process.kill(parseInt(pid), 'SIGTERM'); } catch {}
+        }
+        setTimeout(() => {
+          this.httpServer.listen(this.config.port, () => {
+            console.error(`HTTP server listening on port ${this.config.port}`);
+          });
+        }, 2000);
+      } else {
+        console.error('HTTP server error:', err);
+        process.exit(1);
+      }
+    });
+
     this.httpServer.listen(this.config.port, () => {
       console.error(`HTTP server listening on port ${this.config.port}`);
     });

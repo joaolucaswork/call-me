@@ -16,8 +16,6 @@ let callManager: CallManager | null = null;
 
 // Track connected MCP sessions
 let connectedSessions = 0;
-let shutdownTimer: ReturnType<typeof setTimeout> | null = null;
-const SHUTDOWN_DELAY_MS = 5000; // Wait 5s after last session disconnects
 
 async function main() {
   const port = parseInt(process.env.CALLME_PORT || '3333', 10);
@@ -80,10 +78,6 @@ async function main() {
     // Session tracking endpoints
     if (url.pathname === '/api/connect') {
       connectedSessions++;
-      if (shutdownTimer) {
-        clearTimeout(shutdownTimer);
-        shutdownTimer = null;
-      }
       console.error(`MCP session connected (${connectedSessions} active)`);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ sessions: connectedSessions }));
@@ -93,13 +87,6 @@ async function main() {
     if (url.pathname === '/api/disconnect') {
       connectedSessions = Math.max(0, connectedSessions - 1);
       console.error(`MCP session disconnected (${connectedSessions} active)`);
-      if (connectedSessions === 0) {
-        console.error(`No active sessions. Shutting down in ${SHUTDOWN_DELAY_MS / 1000}s...`);
-        shutdownTimer = setTimeout(() => {
-          console.error('No sessions reconnected. Shutting down HTTP server.');
-          shutdown();
-        }, SHUTDOWN_DELAY_MS);
-      }
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ sessions: connectedSessions }));
       return;
@@ -153,10 +140,6 @@ async function main() {
   // Graceful shutdown
   const shutdown = async () => {
     console.error('\nShutting down...');
-    if (shutdownTimer) {
-      clearTimeout(shutdownTimer);
-      shutdownTimer = null;
-    }
     callManager?.shutdown();
     apiServer.close();
     if (!usingExternalTunnel) {

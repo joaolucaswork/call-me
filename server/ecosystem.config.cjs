@@ -22,8 +22,8 @@ module.exports = {
   apps: [
     {
       name: 'ngrok',
-      script: 'bash',
-      args: '-c "pkill -x ngrok 2>/dev/null; sleep 2; exec ngrok http 3333 --domain=helena-call.ngrok.app"',
+      script: '/opt/homebrew/bin/ngrok',
+      args: 'http 3333 --domain=helena-call.ngrok.app',
       autorestart: true,
       max_restarts: 10,
       restart_delay: 5000,
@@ -31,7 +31,7 @@ module.exports = {
     {
       name: 'callme',
       script: 'src/http-server.ts',
-      interpreter: 'bun',
+      interpreter: '/Users/lucas/.bun/bin/bun',
       cwd: '/Users/lucas/Documents/GitHub/call-me/server',
       watch: ['src'],
       ignore_watch: ['node_modules'],
