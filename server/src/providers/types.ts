@@ -104,6 +104,7 @@ export interface STTConfig {
   apiUrl?: string;
   model?: string;
   silenceDurationMs?: number;
+  vadThreshold?: number;
 }
 
 /**

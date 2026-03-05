@@ -14,7 +14,8 @@ export class OpenAIRealtimeSTTProvider implements RealtimeSTTProvider {
   readonly name = 'openai-realtime';
   private apiKey: string | null = null;
   private model: string = 'gpt-4o-transcribe';
-  private silenceDurationMs: number = 800;
+  private silenceDurationMs: number = 1200;
+  private vadThreshold: number = 0.35;
 
   initialize(config: STTConfig): void {
     if (!config.apiKey) {
@@ -22,13 +23,14 @@ export class OpenAIRealtimeSTTProvider implements RealtimeSTTProvider {
     }
     this.apiKey = config.apiKey;
     this.model = config.model || 'gpt-4o-transcribe';
-    this.silenceDurationMs = config.silenceDurationMs || 800;
-    console.error(`STT provider: OpenAI Realtime (${this.model}, silence: ${this.silenceDurationMs}ms)`);
+    this.silenceDurationMs = config.silenceDurationMs || 1200;
+    this.vadThreshold = config.vadThreshold || 0.35;
+    console.error(`STT provider: OpenAI Realtime (${this.model}, silence: ${this.silenceDurationMs}ms, vad: ${this.vadThreshold})`);
   }
 
   createSession(): RealtimeSTTSession {
     if (!this.apiKey) throw new Error('OpenAI Realtime STT not initialized');
-    return new OpenAIRealtimeSTTSession(this.apiKey, this.model, this.silenceDurationMs);
+    return new OpenAIRealtimeSTTSession(this.apiKey, this.model, this.silenceDurationMs, this.vadThreshold);
   }
 }
 
@@ -37,6 +39,7 @@ class OpenAIRealtimeSTTSession implements RealtimeSTTSession {
   private apiKey: string;
   private model: string;
   private silenceDurationMs: number;
+  private vadThreshold: number;
   private connected = false;
   private pendingTranscript = '';
   private onTranscriptCallback: ((transcript: string) => void) | null = null;
@@ -46,10 +49,11 @@ class OpenAIRealtimeSTTSession implements RealtimeSTTSession {
   private maxReconnectAttempts = 5;
   private reconnectDelayMs = 1000;
 
-  constructor(apiKey: string, model: string, silenceDurationMs: number) {
+  constructor(apiKey: string, model: string, silenceDurationMs: number, vadThreshold: number) {
     this.apiKey = apiKey;
     this.model = model;
     this.silenceDurationMs = silenceDurationMs;
+    this.vadThreshold = vadThreshold;
   }
 
   async connect(): Promise<void> {
@@ -84,8 +88,8 @@ class OpenAIRealtimeSTTSession implements RealtimeSTTSession {
             },
             turn_detection: {
               type: 'server_vad',
-              threshold: 0.5,
-              prefix_padding_ms: 300,
+              threshold: this.vadThreshold,
+              prefix_padding_ms: 500,
               silence_duration_ms: this.silenceDurationMs,
             },
           },

@@ -48,11 +48,16 @@ export interface ProviderConfig {
   // STT settings
   sttModel?: string;
   sttSilenceDurationMs?: number;
+  sttVadThreshold?: number;
 }
 
 export function loadProviderConfig(): ProviderConfig {
   const sttSilenceDurationMs = process.env.CALLME_STT_SILENCE_DURATION_MS
     ? parseInt(process.env.CALLME_STT_SILENCE_DURATION_MS, 10)
+    : undefined;
+
+  const sttVadThreshold = process.env.CALLME_STT_VAD_THRESHOLD
+    ? parseFloat(process.env.CALLME_STT_VAD_THRESHOLD)
     : undefined;
 
   // Default to telnyx if not specified
@@ -77,6 +82,7 @@ export function loadProviderConfig(): ProviderConfig {
     ttsModel: process.env.CALLME_TTS_MODEL,
     sttModel: process.env.CALLME_STT_MODEL || 'gpt-4o-transcribe',
     sttSilenceDurationMs,
+    sttVadThreshold,
   };
 }
 
@@ -124,6 +130,7 @@ export function createSTTProvider(config: ProviderConfig): RealtimeSTTProvider {
     apiKey: config.openaiApiKey,
     model: config.sttModel,
     silenceDurationMs: config.sttSilenceDurationMs,
+    vadThreshold: config.sttVadThreshold,
   });
   return provider;
 }
