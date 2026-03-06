@@ -118,15 +118,23 @@ async function main() {
           case '/api/initiate_call':
             result = await callManager!.initiateCall(data.message);
             break;
-          case '/api/continue_call':
-            result = { response: await callManager!.continueCall(data.call_id, data.message) };
+          case '/api/continue_call': {
+            const continueResult = await callManager!.continueCall(data.call_id, data.message);
+            // If hung up, returns object with context; otherwise returns string response
+            result = typeof continueResult === 'string' ? { response: continueResult } : continueResult;
             break;
-          case '/api/speak_to_user':
-            await callManager!.speakOnly(data.call_id, data.message);
-            result = { success: true };
+          }
+          case '/api/speak_to_user': {
+            const speakResult = await callManager!.speakOnly(data.call_id, data.message);
+            // If hung up, returns object with context; otherwise returns void
+            result = speakResult || { success: true };
             break;
+          }
           case '/api/end_call':
             result = await callManager!.endCall(data.call_id, data.message);
+            break;
+          case '/api/get_call_status':
+            result = callManager!.getCallStatus(data.call_id);
             break;
           default:
             res.writeHead(404);

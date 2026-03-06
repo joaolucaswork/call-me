@@ -54,7 +54,7 @@ Speak a message on an active call without waiting for a response. Use this to ac
 - Keep the conversation flowing naturally without awkward silences
 
 ### `end_call`
-End an active call with a closing message.
+End an active call with a closing message. If the user already hung up, returns conversation history.
 
 **Parameters:**
 - `call_id` (string): The call ID from `initiate_call`
@@ -62,6 +62,17 @@ End an active call with a closing message.
 
 **Returns:**
 - Call duration in seconds
+- If user had already hung up: conversation history
+
+### `get_call_status`
+Check if a call is still active, hung up (with preserved context), or not found.
+
+**Parameters:**
+- `call_id` (string): The call ID to check
+
+**Returns:**
+- Status: `active`, `hung_up`, or `not_found`
+- For active/hung_up: conversation history and duration
 
 ## Example Usage
 
@@ -92,6 +103,18 @@ End an active call with a closing message.
 7. end_call: "Perfect! I'll implement the new payment methods. Talk soon!"
 ```
 
+## Automatic Hold Messages
+
+The server automatically plays periodic hold messages (every 15 seconds by default) when Claude hasn't spoken for a while. This prevents awkward silence during long operations. The timer resets every time you use `speak_to_user`, `continue_call`, or any speaking tool.
+
+## Handling Hangups
+
+When the user hangs up during a call:
+- The call state is preserved for 5 minutes with full conversation history
+- `continue_call` and `speak_to_user` will return the conversation history instead of an error
+- Use `get_call_status` to check if a call is still active before trying to speak
+- You can call back using `initiate_call` — the conversation history from the previous call is available
+
 ## Best Practices
 
 1. **Be conversational** - Talk naturally, like a real conversation
@@ -99,3 +122,5 @@ End an active call with a closing message.
 3. **Offer clear options** - Make decisions easy with specific choices
 4. **Use speak_to_user for acknowledgments** - Before time-consuming operations (searches, file reads, etc.), use `speak_to_user` to acknowledge the request so the user isn't left wondering what's happening
 5. **Always end gracefully** - Say goodbye and state what you'll do next
+6. **Check call status** - If you suspect the user may have hung up, use `get_call_status` before speaking
+7. **Call back when appropriate** - If the user hangs up and you have results to share, call them back

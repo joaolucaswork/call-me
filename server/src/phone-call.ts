@@ -29,8 +29,10 @@ interface CallState {
   conversationHistory: Array<{ speaker: 'claude' | 'user'; message: string }>;
   startTime: number;
   hungUp: boolean;
+  hungUpAt?: number;  // Timestamp when call was hung up
   sttSession: RealtimeSTTSession | null;
   isInbound?: boolean;  // True for incoming calls
+  keepaliveTimer?: ReturnType<typeof setTimeout> | null;  // Holdmusic keepalive timer
 }
 
 export interface ServerConfig {
@@ -42,6 +44,8 @@ export interface ServerConfig {
   providerConfig: ProviderConfig;  // For webhook signature verification
   transcriptTimeoutMs: number;
   inboundGreeting: string;  // Greeting for incoming calls
+  holdIntervalMs: number;  // Interval for keepalive hold messages (0 = disabled)
+  holdMessages: string[];  // Messages to cycle through during hold
 }
 
 /**
@@ -93,6 +97,16 @@ export function loadServerConfig(publicUrl: string): ServerConfig {
   const inboundGreeting = process.env.CALLME_INBOUND_GREETING ||
     "Olá, aqui é o Claude. Como posso ajudar?";
 
+  // Hold/keepalive interval (default 15 seconds, 0 to disable)
+  const holdIntervalMs = parseInt(process.env.CALLME_HOLD_INTERVAL_MS || '15000', 10);
+
+  const holdMessages = [
+    "Ainda estou trabalhando nisso, um momento...",
+    "Continuo aqui, só processando...",
+    "Já já volto, estou finalizando...",
+    "Um instante, quase pronto...",
+  ];
+
   return {
     publicUrl,
     port: parseInt(process.env.CALLME_PORT || '3333', 10),
@@ -102,17 +116,21 @@ export function loadServerConfig(publicUrl: string): ServerConfig {
     providerConfig,
     transcriptTimeoutMs,
     inboundGreeting,
+    holdIntervalMs,
+    holdMessages,
   };
 }
 
 export class CallManager {
   private activeCalls = new Map<string, CallState>();
+  private hungUpCalls = new Map<string, CallState>();  // Preserved after hangup for context
   private callControlIdToCallId = new Map<string, string>();
   private wsTokenToCallId = new Map<string, string>();  // For WebSocket auth
   private httpServer: ReturnType<typeof createServer> | null = null;
   private wss: WebSocketServer | null = null;
   private config: ServerConfig;
   private currentCallId = 0;
+  private holdMessageIndex = 0;
   private onInboundCall?: (callId: string, from: string, transcript: string) => void;
 
   constructor(config: ServerConfig) {
@@ -125,6 +143,116 @@ export class CallManager {
    */
   setInboundCallHandler(handler: (callId: string, from: string, transcript: string) => void): void {
     this.onInboundCall = handler;
+  }
+
+  /**
+   * Start keepalive timer for a call. Plays hold messages at intervals.
+   */
+  private startKeepalive(state: CallState): void {
+    if (this.config.holdIntervalMs <= 0) return;
+    this.stopKeepalive(state);
+
+    const scheduleNext = () => {
+      state.keepaliveTimer = setTimeout(async () => {
+        if (state.hungUp || !state.ws || state.ws.readyState !== WebSocket.OPEN) {
+          return;
+        }
+        const msg = this.config.holdMessages[this.holdMessageIndex % this.config.holdMessages.length];
+        this.holdMessageIndex++;
+        try {
+          console.error(`[${state.callId}] Playing keepalive: "${msg}"`);
+          const audioData = await this.generateTTSAudio(msg);
+          await this.sendPreGeneratedAudio(state, audioData);
+        } catch (err) {
+          console.error(`[${state.callId}] Keepalive audio failed:`, err);
+        }
+        if (!state.hungUp) {
+          scheduleNext();
+        }
+      }, this.config.holdIntervalMs);
+    };
+    scheduleNext();
+  }
+
+  /**
+   * Stop keepalive timer for a call.
+   */
+  private stopKeepalive(state: CallState): void {
+    if (state.keepaliveTimer) {
+      clearTimeout(state.keepaliveTimer);
+      state.keepaliveTimer = null;
+    }
+  }
+
+  /**
+   * Reset keepalive timer (called when Claude sends audio).
+   */
+  private resetKeepalive(state: CallState): void {
+    if (this.config.holdIntervalMs <= 0) return;
+    this.stopKeepalive(state);
+    this.startKeepalive(state);
+  }
+
+  /**
+   * Move call to hungUp state, preserving context for 5 minutes.
+   * Idempotent — safe to call multiple times for the same callId.
+   */
+  private preserveHungUpCall(callId: string): void {
+    // Already preserved
+    if (this.hungUpCalls.has(callId)) return;
+    const state = this.activeCalls.get(callId);
+    if (!state) return;
+
+    state.hungUp = true;
+    state.hungUpAt = Date.now();
+    this.stopKeepalive(state);
+    state.sttSession?.close();
+    state.sttSession = null;
+    state.ws?.close();
+    state.ws = null;
+
+    // Move to hungUpCalls for context preservation
+    this.hungUpCalls.set(callId, state);
+    this.activeCalls.delete(callId);
+
+    // Clean up mappings
+    this.wsTokenToCallId.delete(state.wsToken);
+    if (state.callControlId) {
+      this.callControlIdToCallId.delete(state.callControlId);
+    }
+
+    // Auto-cleanup after 5 minutes
+    setTimeout(() => {
+      this.hungUpCalls.delete(callId);
+      console.error(`[${callId}] Hung-up call context expired`);
+    }, 5 * 60 * 1000);
+
+    console.error(`[${callId}] Call preserved in hung-up state (context available for 5 min)`);
+  }
+
+  /**
+   * Get call status and history (works for both active and hung-up calls).
+   */
+  getCallStatus(callId: string): { status: 'active' | 'hung_up' | 'not_found'; conversationHistory?: Array<{ speaker: string; message: string }>; durationSeconds?: number } {
+    const active = this.activeCalls.get(callId);
+    if (active) {
+      return {
+        status: 'active',
+        conversationHistory: active.conversationHistory,
+        durationSeconds: Math.round((Date.now() - active.startTime) / 1000),
+      };
+    }
+
+    const hungUp = this.hungUpCalls.get(callId);
+    if (hungUp) {
+      return {
+        status: 'hung_up',
+        conversationHistory: hungUp.conversationHistory,
+        durationSeconds: Math.round(((hungUp.hungUpAt || Date.now()) - hungUp.startTime) / 1000),
+      };
+    }
+
+    return { status: 'not_found' };
   }
 
   startServer(): void {
@@ -407,16 +535,11 @@ export class CallManager {
 
     // Handle call status updates
     if (callStatus === 'completed' || callStatus === 'busy' || callStatus === 'no-answer' || callStatus === 'failed') {
-      // Call ended - find and mark as hung up
+      // Call ended - preserve state for context
       if (callSid) {
         const callId = this.callControlIdToCallId.get(callSid);
         if (callId) {
-          this.callControlIdToCallId.delete(callSid);
-          const state = this.activeCalls.get(callId);
-          if (state) {
-            state.hungUp = true;
-            state.ws?.close();
-          }
+          this.preserveHungUpCall(callId);
         }
       }
       res.writeHead(200, { 'Content-Type': 'application/xml' });
@@ -508,12 +631,7 @@ export class CallManager {
         case 'call.hangup':
           const hangupCallId = this.callControlIdToCallId.get(callControlId);
           if (hangupCallId) {
-            this.callControlIdToCallId.delete(callControlId);
-            const hangupState = this.activeCalls.get(hangupCallId);
-            if (hangupState) {
-              hangupState.hungUp = true;
-              hangupState.ws?.close();
-            }
+            this.preserveHungUpCall(hangupCallId);
           }
           break;
 
@@ -606,10 +724,13 @@ export class CallManager {
       // Notify via handler callback
       this.onInboundCall?.(callId, from, transcript);
 
-      // Play hold message
-      const holdMessage = "Um momento, por favor. Estou conectando você ao Claude.";
+      // Play hold message and start keepalive
+      const holdMessage = "Um momento, por favor. Estou conectando voce ao Claude.";
       const holdAudio = await this.generateTTSAudio(holdMessage);
       await this.sendPreGeneratedAudio(state, holdAudio);
+
+      // Start keepalive so user hears periodic updates while waiting
+      this.startKeepalive(state);
     } catch (error) {
       console.error(`[${callId}] Inbound call error:`, error instanceof Error ? error.message : error);
       try { await this.hangUpCall(callId); } catch {}
@@ -682,9 +803,12 @@ export class CallManager {
       this.writePendingInboundCall(callId, from, transcript);
       this.onInboundCall?.(callId, from, transcript);
 
-      const holdMessage = "Um momento, por favor. Estou conectando você ao Claude.";
+      const holdMessage = "Um momento, por favor. Estou conectando voce ao Claude.";
       const holdAudio = await this.generateTTSAudio(holdMessage);
       await this.sendPreGeneratedAudio(state, holdAudio);
+
+      // Start keepalive so user hears periodic updates while waiting
+      this.startKeepalive(state);
     } catch (error) {
       console.error(`[${callId}] Inbound Twilio call error:`, error instanceof Error ? error.message : error);
       try { await this.hangUpCall(callId); } catch {}
@@ -731,6 +855,7 @@ export class CallManager {
   private cleanupCall(callId: string): void {
     const state = this.activeCalls.get(callId);
     if (state) {
+      this.stopKeepalive(state);
       state.sttSession?.close();
       state.ws?.close();
       this.wsTokenToCallId.delete(state.wsToken);
@@ -748,6 +873,7 @@ export class CallManager {
     const state = this.activeCalls.get(callId);
     if (!state) return;
 
+    this.stopKeepalive(state);
     if (state.callControlId) {
       await this.config.providers.phone.hangup(state.callControlId);
     }
@@ -811,36 +937,88 @@ export class CallManager {
       state.conversationHistory.push({ speaker: 'claude', message });
       state.conversationHistory.push({ speaker: 'user', message: response });
 
+      // Start keepalive timer (will play hold messages if Claude takes long to respond)
+      this.startKeepalive(state);
+
       return { callId, response };
     } catch (error) {
+      this.stopKeepalive(state);
       state.sttSession?.close();
       this.activeCalls.delete(callId);
       throw error;
     }
   }
 
-  async continueCall(callId: string, message: string): Promise<string> {
+  async continueCall(callId: string, message: string): Promise<string | { hungUp: true; conversationHistory: Array<{ speaker: string; message: string }>; durationSeconds: number }> {
     const state = this.activeCalls.get(callId);
-    if (!state) throw new Error(`No active call: ${callId}`);
+
+    // Check if call was hung up — return context instead of error
+    if (!state) {
+      const hungUp = this.hungUpCalls.get(callId);
+      if (hungUp) {
+        return {
+          hungUp: true,
+          conversationHistory: hungUp.conversationHistory,
+          durationSeconds: Math.round(((hungUp.hungUpAt || Date.now()) - hungUp.startTime) / 1000),
+        };
+      }
+      throw new Error(`No active call: ${callId}`);
+    }
+
+    // Reset keepalive since Claude is actively communicating
+    this.resetKeepalive(state);
 
     const response = await this.speakAndListen(state, message);
     state.conversationHistory.push({ speaker: 'claude', message });
     state.conversationHistory.push({ speaker: 'user', message: response });
 
+    // Restart keepalive after getting response (Claude will process)
+    this.startKeepalive(state);
+
     return response;
   }
 
-  async speakOnly(callId: string, message: string): Promise<void> {
+  async speakOnly(callId: string, message: string): Promise<{ hungUp: true; conversationHistory: Array<{ speaker: string; message: string }>; durationSeconds: number } | void> {
     const state = this.activeCalls.get(callId);
-    if (!state) throw new Error(`No active call: ${callId}`);
+
+    // Check if call was hung up — return context instead of error
+    if (!state) {
+      const hungUp = this.hungUpCalls.get(callId);
+      if (hungUp) {
+        return {
+          hungUp: true,
+          conversationHistory: hungUp.conversationHistory,
+          durationSeconds: Math.round(((hungUp.hungUpAt || Date.now()) - hungUp.startTime) / 1000),
+        };
+      }
+      throw new Error(`No active call: ${callId}`);
+    }
+
+    // Reset keepalive since Claude is actively communicating
+    this.resetKeepalive(state);
 
     await this.speak(state, message);
     state.conversationHistory.push({ speaker: 'claude', message });
+
+    // Restart keepalive
+    this.startKeepalive(state);
   }
 
-  async endCall(callId: string, message: string): Promise<{ durationSeconds: number }> {
+  async endCall(callId: string, message: string): Promise<{ durationSeconds: number; conversationHistory?: Array<{ speaker: string; message: string }> }> {
     const state = this.activeCalls.get(callId);
-    if (!state) throw new Error(`No active call: ${callId}`);
+
+    // If call was already hung up, return its preserved context
+    if (!state) {
+      const hungUp = this.hungUpCalls.get(callId);
+      if (hungUp) {
+        const durationSeconds = Math.round(((hungUp.hungUpAt || Date.now()) - hungUp.startTime) / 1000);
+        this.hungUpCalls.delete(callId);
+        return { durationSeconds, conversationHistory: hungUp.conversationHistory };
+      }
+      throw new Error(`No active call: ${callId}`);
+    }
+
+    this.stopKeepalive(state);
 
     await this.speak(state, message);
 
@@ -1032,6 +1210,8 @@ export class CallManager {
     ]);
 
     if (state.hungUp) {
+      // Preserve the call state before throwing
+      this.preserveHungUpCall(state.callId);
       throw new Error('Call was hung up by user');
     }
 
@@ -1108,6 +1288,9 @@ export class CallManager {
   }
 
   shutdown(): void {
+    for (const [_, state] of this.activeCalls) {
+      this.stopKeepalive(state);
+    }
     for (const callId of this.activeCalls.keys()) {
       this.endCall(callId, 'Goodbye!').catch(console.error);
     }

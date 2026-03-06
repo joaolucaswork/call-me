@@ -194,7 +194,7 @@ async function main() {
         },
         {
           name: 'end_call',
-          description: 'End an active call with a closing message.',
+          description: 'End an active call with a closing message. If the user already hung up, returns the conversation history.',
           inputSchema: {
             type: 'object',
             properties: {
@@ -202,6 +202,17 @@ async function main() {
               message: { type: 'string', description: 'Your closing message (say goodbye!)' },
             },
             required: ['call_id', 'message'],
+          },
+        },
+        {
+          name: 'get_call_status',
+          description: 'Check if a call is still active, hung up (with preserved context), or not found.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              call_id: { type: 'string', description: 'The call ID to check' },
+            },
+            required: ['call_id'],
           },
         },
       ],
@@ -225,7 +236,14 @@ async function main() {
 
       if (request.params.name === 'continue_call') {
         const { call_id, message } = request.params.arguments as { call_id: string; message: string };
-        const result = await apiCall('/continue_call', { call_id, message }) as { response: string };
+        const result = await apiCall('/continue_call', { call_id, message }) as { response?: string; hungUp?: boolean; conversationHistory?: Array<{ speaker: string; message: string }>; durationSeconds?: number };
+
+        if (result.hungUp) {
+          const history = result.conversationHistory?.map(h => `${h.speaker}: ${h.message}`).join('\n') || '(no history)';
+          return {
+            content: [{ type: 'text', text: `The user hung up the call (duration: ${result.durationSeconds}s).\n\nConversation history:\n${history}\n\nYou can use initiate_call to call them back if needed.` }],
+          };
+        }
 
         return {
           content: [{ type: 'text', text: `User's response:\n${result.response}` }],
@@ -234,7 +252,14 @@ async function main() {
 
       if (request.params.name === 'speak_to_user') {
         const { call_id, message } = request.params.arguments as { call_id: string; message: string };
-        await apiCall('/speak_to_user', { call_id, message });
+        const result = await apiCall('/speak_to_user', { call_id, message }) as { success?: boolean; hungUp?: boolean; conversationHistory?: Array<{ speaker: string; message: string }>; durationSeconds?: number };
+
+        if (result.hungUp) {
+          const history = result.conversationHistory?.map(h => `${h.speaker}: ${h.message}`).join('\n') || '(no history)';
+          return {
+            content: [{ type: 'text', text: `The user hung up the call (duration: ${result.durationSeconds}s).\n\nConversation history:\n${history}\n\nYou can use initiate_call to call them back if needed.` }],
+          };
+        }
 
         return {
           content: [{ type: 'text', text: `Message spoken: "${message}"` }],
@@ -243,10 +268,38 @@ async function main() {
 
       if (request.params.name === 'end_call') {
         const { call_id, message } = request.params.arguments as { call_id: string; message: string };
-        const result = await apiCall('/end_call', { call_id, message }) as { durationSeconds: number };
+        const result = await apiCall('/end_call', { call_id, message }) as { durationSeconds: number; conversationHistory?: Array<{ speaker: string; message: string }> };
+
+        let text = `Call ended. Duration: ${result.durationSeconds}s`;
+        if (result.conversationHistory) {
+          const history = result.conversationHistory.map(h => `${h.speaker}: ${h.message}`).join('\n');
+          text += `\n\nConversation history (user had already hung up):\n${history}`;
+        }
 
         return {
-          content: [{ type: 'text', text: `Call ended. Duration: ${result.durationSeconds}s` }],
+          content: [{ type: 'text', text }],
+        };
+      }
+
+      if (request.params.name === 'get_call_status') {
+        const { call_id } = request.params.arguments as { call_id: string };
+        const result = await apiCall('/get_call_status', { call_id }) as { status: string; conversationHistory?: Array<{ speaker: string; message: string }>; durationSeconds?: number };
+
+        if (result.status === 'active') {
+          return {
+            content: [{ type: 'text', text: `Call is active (${result.durationSeconds}s). Use continue_call to speak or end_call to hang up.` }],
+          };
+        }
+
+        if (result.status === 'hung_up') {
+          const history = result.conversationHistory?.map(h => `${h.speaker}: ${h.message}`).join('\n') || '(no history)';
+          return {
+            content: [{ type: 'text', text: `User hung up (duration: ${result.durationSeconds}s).\n\nConversation history:\n${history}\n\nUse initiate_call to call them back.` }],
+          };
+        }
+
+        return {
+          content: [{ type: 'text', text: `Call not found: ${call_id}` }],
         };
       }
 
