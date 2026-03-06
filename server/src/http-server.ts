@@ -51,6 +51,13 @@ async function main() {
   }
 
   callManager = new CallManager(serverConfig);
+
+  // Set up inbound call notification handler
+  callManager.setInboundCallHandler((callId, from, transcript) => {
+    console.error(`[Inbound] Call ${callId} from ${from}: "${transcript}"`);
+    console.error('[Inbound] Pending call info written — hooks will notify Claude');
+  });
+
   callManager.startServer();
 
   // Start API server for MCP communication

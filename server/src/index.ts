@@ -84,11 +84,17 @@ async function startHttpServer(): Promise<void> {
   console.error('Starting HTTP server...');
   let processExited = false;
 
+  // Build public URL from ngrok domain if not already set
+  const env = { ...process.env };
+  if (!env.CALLME_PUBLIC_URL && env.CALLME_NGROK_DOMAIN) {
+    env.CALLME_PUBLIC_URL = `https://${env.CALLME_NGROK_DOMAIN}`;
+  }
+
   httpServerProcess = spawn({
     cmd: ['bun', 'run', httpServerPath],
     stdout: 'ignore',
     stderr: 'inherit',
-    env: process.env,
+    env,
   });
 
   // Monitor child process exit (e.g. EADDRINUSE → clean exit)

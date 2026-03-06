@@ -30,6 +30,7 @@ interface CallState {
   startTime: number;
   hungUp: boolean;
   sttSession: RealtimeSTTSession | null;
+  isInbound?: boolean;  // True for incoming calls
 }
 
 export interface ServerConfig {
@@ -40,6 +41,7 @@ export interface ServerConfig {
   providers: ProviderRegistry;
   providerConfig: ProviderConfig;  // For webhook signature verification
   transcriptTimeoutMs: number;
+  inboundGreeting: string;  // Greeting for incoming calls
 }
 
 /**
@@ -87,6 +89,10 @@ export function loadServerConfig(publicUrl: string): ServerConfig {
   // Default 3 minutes for transcript timeout
   const transcriptTimeoutMs = parseInt(process.env.CALLME_TRANSCRIPT_TIMEOUT_MS || '180000', 10);
 
+  // Default greeting for inbound calls
+  const inboundGreeting = process.env.CALLME_INBOUND_GREETING ||
+    "Olá, aqui é o Claude. Como posso ajudar?";
+
   return {
     publicUrl,
     port: parseInt(process.env.CALLME_PORT || '3333', 10),
@@ -95,6 +101,7 @@ export function loadServerConfig(publicUrl: string): ServerConfig {
     providers,
     providerConfig,
     transcriptTimeoutMs,
+    inboundGreeting,
   };
 }
 
@@ -106,9 +113,18 @@ export class CallManager {
   private wss: WebSocketServer | null = null;
   private config: ServerConfig;
   private currentCallId = 0;
+  private onInboundCall?: (callId: string, from: string, transcript: string) => void;
 
   constructor(config: ServerConfig) {
     this.config = config;
+  }
+
+  /**
+   * Set handler for inbound call notifications
+   * Called when an incoming call is answered, greeted, and user speaks
+   */
+  setInboundCallHandler(handler: (callId: string, from: string, transcript: string) => void): void {
+    this.onInboundCall = handler;
   }
 
   startServer(): void {
@@ -379,6 +395,16 @@ export class CallManager {
     const errorMessage = params.get('ErrorMessage');
     console.error(`Twilio webhook: CallSid=${callSid}, CallStatus=${callStatus}${errorCode ? `, Error=${errorCode}: ${errorMessage}` : ''}`);
 
+    // Handle inbound calls (no matching callId = incoming call)
+    if (callSid && callStatus === 'ringing' && !this.callControlIdToCallId.has(callSid)) {
+      const from = params.get('From') || 'unknown';
+      console.error(`[Inbound] Incoming Twilio call from ${from}`);
+      this.handleInboundCallTwilio(callSid, from, params, res).catch(err => {
+        console.error('[Inbound] Failed to handle inbound call:', err);
+      });
+      return;
+    }
+
     // Handle call status updates
     if (callStatus === 'completed' || callStatus === 'busy' || callStatus === 'no-answer' || callStatus === 'failed') {
       // Call ended - find and mark as hung up
@@ -456,6 +482,13 @@ export class CallManager {
     try {
       switch (eventType) {
         case 'call.initiated':
+          // Check if this is an inbound call
+          const direction = event.data?.payload?.direction;
+          if (direction === 'incoming') {
+            this.handleInboundCall(event.data.payload).catch(err => {
+              console.error('[Inbound] Failed to handle inbound call:', err);
+            });
+          }
           break;
 
         case 'call.answered':
@@ -508,6 +541,220 @@ export class CallManager {
     }
   }
 
+  /**
+   * Handle an incoming Telnyx call - answer, greet, listen, then notify
+   */
+  private async handleInboundCall(payload: any): Promise<void> {
+    const callControlId = payload.call_control_id;
+    const from = payload.from;
+
+    console.error(`[Inbound] Incoming call from ${from}, callControlId: ${callControlId}`);
+
+    const callId = `inbound-${++this.currentCallId}-${Date.now()}`;
+    const sttSession = this.config.providers.stt.createSession();
+    await sttSession.connect();
+
+    const wsToken = generateWebSocketToken();
+
+    const state: CallState = {
+      callId,
+      callControlId,
+      userPhoneNumber: from,
+      ws: null,
+      streamSid: null,
+      streamingReady: false,
+      wsToken,
+      conversationHistory: [],
+      startTime: Date.now(),
+      hungUp: false,
+      sttSession,
+      isInbound: true,
+    };
+
+    this.activeCalls.set(callId, state);
+    this.callControlIdToCallId.set(callControlId, callId);
+    this.wsTokenToCallId.set(wsToken, callId);
+
+    try {
+      await this.config.providers.phone.answerCall(callControlId);
+      await this.waitForConnection(callId, 15000);
+
+      if (state.hungUp) {
+        this.cleanupCall(callId);
+        return;
+      }
+
+      // Play greeting
+      const audioData = await this.generateTTSAudio(this.config.inboundGreeting);
+      await this.sendPreGeneratedAudio(state, audioData);
+
+      if (state.hungUp) {
+        this.cleanupCall(callId);
+        return;
+      }
+
+      // Listen for user's response
+      const transcript = await this.listenWithTimeout(state, 30000);
+      state.conversationHistory.push({ speaker: 'claude', message: this.config.inboundGreeting });
+      state.conversationHistory.push({ speaker: 'user', message: transcript });
+
+      console.error(`[${callId}] User said: ${transcript}`);
+
+      // Write pending call info for hooks to detect
+      this.writePendingInboundCall(callId, from, transcript);
+
+      // Notify via handler callback
+      this.onInboundCall?.(callId, from, transcript);
+
+      // Play hold message
+      const holdMessage = "Um momento, por favor. Estou conectando você ao Claude.";
+      const holdAudio = await this.generateTTSAudio(holdMessage);
+      await this.sendPreGeneratedAudio(state, holdAudio);
+    } catch (error) {
+      console.error(`[${callId}] Inbound call error:`, error instanceof Error ? error.message : error);
+      try { await this.hangUpCall(callId); } catch {}
+    }
+  }
+
+  /**
+   * Handle an incoming Twilio call - return TwiML to answer and stream
+   */
+  private async handleInboundCallTwilio(callSid: string, from: string, params: URLSearchParams, res: ServerResponse): Promise<void> {
+    const callId = `inbound-${++this.currentCallId}-${Date.now()}`;
+
+    console.error(`[${callId}] Setting up inbound Twilio call from ${from}`);
+
+    const sttSession = this.config.providers.stt.createSession();
+    await sttSession.connect();
+
+    const wsToken = generateWebSocketToken();
+
+    const state: CallState = {
+      callId,
+      callControlId: callSid,
+      userPhoneNumber: from,
+      ws: null,
+      streamSid: null,
+      streamingReady: false,
+      wsToken,
+      conversationHistory: [],
+      startTime: Date.now(),
+      hungUp: false,
+      sttSession,
+      isInbound: true,
+    };
+
+    this.activeCalls.set(callId, state);
+    this.callControlIdToCallId.set(callSid, callId);
+    this.wsTokenToCallId.set(wsToken, callId);
+
+    // Return TwiML to answer and start media stream
+    let streamUrl = `wss://${new URL(this.config.publicUrl).host}/media-stream`;
+    streamUrl += `?token=${encodeURIComponent(wsToken)}`;
+    const statusCallbackUrl = `${this.config.publicUrl}/stream-status`;
+    const xml = this.config.providers.phone.getStreamConnectXml(streamUrl, statusCallbackUrl);
+    res.writeHead(200, { 'Content-Type': 'application/xml' });
+    res.end(xml);
+
+    // Wait for WebSocket connection then greet
+    try {
+      await this.waitForConnection(callId, 15000);
+
+      if (state.hungUp) {
+        this.cleanupCall(callId);
+        return;
+      }
+
+      const audioData = await this.generateTTSAudio(this.config.inboundGreeting);
+      await this.sendPreGeneratedAudio(state, audioData);
+
+      if (state.hungUp) {
+        this.cleanupCall(callId);
+        return;
+      }
+
+      const transcript = await this.listenWithTimeout(state, 30000);
+      state.conversationHistory.push({ speaker: 'claude', message: this.config.inboundGreeting });
+      state.conversationHistory.push({ speaker: 'user', message: transcript });
+
+      console.error(`[${callId}] User said: ${transcript}`);
+
+      this.writePendingInboundCall(callId, from, transcript);
+      this.onInboundCall?.(callId, from, transcript);
+
+      const holdMessage = "Um momento, por favor. Estou conectando você ao Claude.";
+      const holdAudio = await this.generateTTSAudio(holdMessage);
+      await this.sendPreGeneratedAudio(state, holdAudio);
+    } catch (error) {
+      console.error(`[${callId}] Inbound Twilio call error:`, error instanceof Error ? error.message : error);
+      try { await this.hangUpCall(callId); } catch {}
+    }
+  }
+
+  /**
+   * Write pending inbound call info to temp file for hooks to detect
+   */
+  private writePendingInboundCall(callId: string, from: string, transcript: string): void {
+    try {
+      const fs = require('fs');
+      const pendingCallInfo = { callId, from, transcript, timestamp: Date.now() };
+      fs.writeFileSync('/tmp/callme-pending-inbound.json', JSON.stringify(pendingCallInfo));
+      console.error(`[${callId}] Wrote pending inbound call info`);
+    } catch (err) {
+      console.error(`[${callId}] Failed to write pending call info:`, err);
+    }
+  }
+
+  /**
+   * Listen with a specific timeout (used for inbound calls)
+   */
+  private async listenWithTimeout(state: CallState, timeoutMs: number): Promise<string> {
+    if (!state.sttSession) {
+      throw new Error('STT session not available');
+    }
+
+    const transcript = await Promise.race([
+      state.sttSession.waitForTranscript(timeoutMs),
+      this.waitForHangup(state),
+    ]);
+
+    if (state.hungUp) {
+      throw new Error('Call was hung up by user');
+    }
+
+    return transcript;
+  }
+
+  /**
+   * Clean up call state and mappings
+   */
+  private cleanupCall(callId: string): void {
+    const state = this.activeCalls.get(callId);
+    if (state) {
+      state.sttSession?.close();
+      state.ws?.close();
+      this.wsTokenToCallId.delete(state.wsToken);
+      if (state.callControlId) {
+        this.callControlIdToCallId.delete(state.callControlId);
+      }
+      this.activeCalls.delete(callId);
+    }
+  }
+
+  /**
+   * Hang up a call and clean up
+   */
+  private async hangUpCall(callId: string): Promise<void> {
+    const state = this.activeCalls.get(callId);
+    if (!state) return;
+
+    if (state.callControlId) {
+      await this.config.providers.phone.hangup(state.callControlId);
+    }
+    state.hungUp = true;
+    this.cleanupCall(callId);
+  }
+
   async initiateCall(message: string): Promise<{ callId: string; response: string }> {
     const callId = `call-${++this.currentCallId}-${Date.now()}`;
 
@@ -555,7 +802,7 @@ export class CallManager {
       // This reduces latency by generating audio while Twilio establishes the stream
       const ttsPromise = this.generateTTSAudio(message);
 
-      await this.waitForConnection(callId, 15000);
+      await this.waitForConnection(callId, 45000);
 
       // Send the pre-generated audio and listen for response
       const audioData = await ttsPromise;

@@ -1,14 +1,14 @@
 {
   "name": "callme",
-  "version": "1.0.3",
-  "description": "Claude calls you on the phone when it needs your input or wants to report progress",
+  "version": "1.1.0",
+  "description": "Claude calls you on the phone when it needs your input or wants to report progress. Supports inbound calls too.",
   "author": {
     "name": "ZeframLou",
     "url": "https://github.com/ZeframLou"
   },
   "repository": "https://github.com/joaolucaswork/call-me",
   "license": "MIT",
-  "keywords": ["phone", "voice", "calls", "input"],
+  "keywords": ["phone", "voice", "calls", "input", "inbound"],
   "skills": "./skills",
   "mcpServers": {
     "callme": {
@@ -30,8 +30,31 @@
         "CALLME_PORT": "${CALLME_PORT:-3333}",
         "CALLME_TRANSCRIPT_TIMEOUT_MS": "${CALLME_TRANSCRIPT_TIMEOUT_MS:-180000}",
         "CALLME_STT_SILENCE_DURATION_MS": "${CALLME_STT_SILENCE_DURATION_MS:-1200}",
-        "CALLME_STT_VAD_THRESHOLD": "${CALLME_STT_VAD_THRESHOLD:-0.35}"
+        "CALLME_STT_VAD_THRESHOLD": "${CALLME_STT_VAD_THRESHOLD:-0.35}",
+        "CALLME_INBOUND_GREETING": "${CALLME_INBOUND_GREETING:-Olá, aqui é o Claude. Como posso ajudar?}"
       }
     }
+  },
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/inbound-call-hook.sh"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/check-pending-call.sh"
+          }
+        ]
+      }
+    ]
   }
 }

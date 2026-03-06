@@ -23,6 +23,11 @@ export interface PhoneProvider {
   initiateCall(to: string, from: string, webhookUrl: string): Promise<string>;
 
   /**
+   * Answer an incoming call (Telnyx only; Twilio answers via TwiML)
+   */
+  answerCall(callControlId: string): Promise<void>;
+
+  /**
    * Hang up an active call
    */
   hangup(callControlId: string): Promise<void>;

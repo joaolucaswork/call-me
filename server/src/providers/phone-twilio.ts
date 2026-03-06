@@ -72,6 +72,13 @@ export class TwilioPhoneProvider implements PhoneProvider {
   }
 
   /**
+   * Answer an incoming call - Twilio handles this via TwiML, no-op here
+   */
+  async answerCall(_callSid: string): Promise<void> {
+    // Twilio answers via TwiML response in the webhook handler
+  }
+
+  /**
    * Start media streaming for Twilio.
    * Note: For Twilio, streaming is started via TwiML response in the webhook,
    * not via a separate API call. This method is a no-op for Twilio.
