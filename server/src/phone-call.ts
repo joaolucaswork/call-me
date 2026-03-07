@@ -33,6 +33,7 @@ interface CallState {
   sttSession: RealtimeSTTSession | null;
   isInbound?: boolean;  // True for incoming calls
   keepaliveTimer?: ReturnType<typeof setTimeout> | null;  // Holdmusic keepalive timer
+  isSendingAudio?: boolean;  // True while audio is being sent (prevents keepalive overlap)
 }
 
 export interface ServerConfig {
@@ -155,6 +156,12 @@ export class CallManager {
     const scheduleNext = () => {
       state.keepaliveTimer = setTimeout(async () => {
         if (state.hungUp || !state.ws || state.ws.readyState !== WebSocket.OPEN) {
+          return;
+        }
+        // Skip this keepalive if audio is currently being sent (avoid overlap/cutting)
+        if (state.isSendingAudio) {
+          console.error(`[${state.callId}] Skipping keepalive (audio in progress)`);
+          if (!state.hungUp) scheduleNext();
           return;
         }
         const msg = this.config.holdMessages[this.holdMessageIndex % this.config.holdMessages.length];
@@ -1098,15 +1105,20 @@ export class CallManager {
   }
 
   private async sendPreGeneratedAudio(state: CallState, muLawData: Buffer): Promise<void> {
-    console.error(`[${state.callId}] Sending pre-generated audio...`);
-    const chunkSize = 160;  // 20ms at 8kHz
-    for (let i = 0; i < muLawData.length; i += chunkSize) {
-      this.sendMediaChunk(state, muLawData.subarray(i, i + chunkSize));
-      await new Promise((resolve) => setTimeout(resolve, 20));
+    state.isSendingAudio = true;
+    try {
+      console.error(`[${state.callId}] Sending pre-generated audio...`);
+      const chunkSize = 160;  // 20ms at 8kHz
+      for (let i = 0; i < muLawData.length; i += chunkSize) {
+        this.sendMediaChunk(state, muLawData.subarray(i, i + chunkSize));
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      // Small delay to ensure audio finishes playing before listening
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      console.error(`[${state.callId}] Audio sent`);
+    } finally {
+      state.isSendingAudio = false;
     }
-    // Small delay to ensure audio finishes playing before listening
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    console.error(`[${state.callId}] Audio sent`);
   }
 
   private async speakAndListen(state: CallState, text: string): Promise<string> {
@@ -1116,19 +1128,23 @@ export class CallManager {
 
   private async speak(state: CallState, text: string): Promise<void> {
     console.error(`[${state.callId}] Speaking: ${text.substring(0, 50)}...`);
+    state.isSendingAudio = true;
+    try {
+      const tts = this.config.providers.tts;
 
-    const tts = this.config.providers.tts;
+      // Use streaming if available for lower latency
+      if (tts.synthesizeStream) {
+        await this.speakStreaming(state, text, tts.synthesizeStream.bind(tts));
+      } else {
+        const pcmData = await tts.synthesize(text);
+        await this.sendAudio(state, pcmData);
+      }
 
-    // Use streaming if available for lower latency
-    if (tts.synthesizeStream) {
-      await this.speakStreaming(state, text, tts.synthesizeStream.bind(tts));
-    } else {
-      const pcmData = await tts.synthesize(text);
-      await this.sendAudio(state, pcmData);
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      console.error(`[${state.callId}] Speaking done`);
+    } finally {
+      state.isSendingAudio = false;
     }
-
-    await new Promise((resolve) => setTimeout(resolve, 150));
-    console.error(`[${state.callId}] Speaking done`);
   }
 
   private async speakStreaming(
