@@ -93,7 +93,7 @@ export function spawnClaudeForCall(session: InboundSession): boolean {
       cwd: projectDir,
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: true,
-      env: { ...process.env, HOME: homedir() },
+      env: { ...process.env, HOME: homedir(), CLAUDECODE: '', CLAUDE_CODE_ENTRYPOINT: '' },
     });
 
     if (!child.pid) {
