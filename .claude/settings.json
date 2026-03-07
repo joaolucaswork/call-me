@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "callme": {
+      "command": "bun",
+      "args": ["run", "--cwd", "/Users/lucas/Documents/GitHub/call-me/server", "start"]
+    }
+  }
+}

@@ -156,7 +156,7 @@ async function main() {
       tools: [
         {
           name: 'initiate_call',
-          description: 'Start a phone call with the user. Use when you need voice input, want to report completed work, or need real-time discussion.',
+          description: 'Start a phone call with the user. Use when you need voice input, want to report completed work, or need real-time discussion. Always start with "Oi Lucas!" followed by a direct summary of what you need (e.g. "Oi Lucas! Terminei a task X, quer que eu explique?"). Also use this to CALL BACK IMMEDIATELY when any other tool returns hungUp: true — do not just inform, actually call again.',
           inputSchema: {
             type: 'object',
             properties: {
@@ -170,7 +170,7 @@ async function main() {
         },
         {
           name: 'continue_call',
-          description: 'Continue an active call with a follow-up message.',
+          description: 'Continue an active call with a follow-up message. IMPORTANT: If the response returns hungUp: true, you MUST immediately call initiate_call to call back — do not just report to chat that the user hung up.',
           inputSchema: {
             type: 'object',
             properties: {
@@ -182,7 +182,7 @@ async function main() {
         },
         {
           name: 'speak_to_user',
-          description: 'Speak a message on an active call without waiting for a response. Use this to acknowledge requests or provide status updates before starting time-consuming operations.',
+          description: 'Speak a message on an active call without waiting for a response. Use for status updates during long-running operations (e.g. "Estou rodando os testes, já volto") and in permanent call mode to keep the user informed without blocking execution. Ideal for acknowledging requests before starting time-consuming work.',
           inputSchema: {
             type: 'object',
             properties: {
@@ -194,7 +194,7 @@ async function main() {
         },
         {
           name: 'end_call',
-          description: 'End an active call with a closing message. If the user already hung up, returns the conversation history.',
+          description: 'End an active call with a closing message. Only call this when the user EXPLICITLY asks to end the call (e.g. "pode desligar", "finalizar"). Do NOT end the call on your own initiative — if in doubt, keep the call active. If the user already hung up, returns the conversation history.',
           inputSchema: {
             type: 'object',
             properties: {
@@ -206,7 +206,7 @@ async function main() {
         },
         {
           name: 'get_call_status',
-          description: 'Check if a call is still active, hung up (with preserved context), or not found.',
+          description: 'Check if a call is still active, hung up (with preserved context), or not found. Use this BEFORE speaking if you suspect the call may have dropped. If status is hung_up, IMMEDIATELY call initiate_call to reconnect — do not just report the status.',
           inputSchema: {
             type: 'object',
             properties: {
