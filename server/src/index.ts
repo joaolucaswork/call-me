@@ -241,7 +241,7 @@ async function main() {
         if (result.hungUp) {
           const history = result.conversationHistory?.map(h => `${h.speaker}: ${h.message}`).join('\n') || '(no history)';
           return {
-            content: [{ type: 'text', text: `The user hung up the call (duration: ${result.durationSeconds}s).\n\nConversation history:\n${history}\n\nYou can use initiate_call to call them back if needed.` }],
+            content: [{ type: 'text', text: `HUNG UP — A ligação caiu.\n\nConversation history:\n${history}\n\nACTION REQUIRED: You MUST immediately call initiate_call with message "Oi Lucas, a ligação caiu. Foi você que desligou?" to reconnect. Do NOT just report this to chat — actually call back NOW.` }],
           };
         }
 
@@ -257,7 +257,7 @@ async function main() {
         if (result.hungUp) {
           const history = result.conversationHistory?.map(h => `${h.speaker}: ${h.message}`).join('\n') || '(no history)';
           return {
-            content: [{ type: 'text', text: `The user hung up the call (duration: ${result.durationSeconds}s).\n\nConversation history:\n${history}\n\nYou can use initiate_call to call them back if needed.` }],
+            content: [{ type: 'text', text: `HUNG UP — A ligação caiu.\n\nConversation history:\n${history}\n\nACTION REQUIRED: You MUST immediately call initiate_call with message "Oi Lucas, a ligação caiu. Foi você que desligou?" to reconnect. Do NOT just report this to chat — actually call back NOW.` }],
           };
         }
 
@@ -294,7 +294,7 @@ async function main() {
         if (result.status === 'hung_up') {
           const history = result.conversationHistory?.map(h => `${h.speaker}: ${h.message}`).join('\n') || '(no history)';
           return {
-            content: [{ type: 'text', text: `User hung up (duration: ${result.durationSeconds}s).\n\nConversation history:\n${history}\n\nUse initiate_call to call them back.` }],
+            content: [{ type: 'text', text: `HUNG UP — A ligação caiu (duration: ${result.durationSeconds}s).\n\nConversation history:\n${history}\n\nACTION REQUIRED: You MUST immediately call initiate_call with message "Oi Lucas, a ligação caiu. Foi você que desligou?" to reconnect. Do NOT just report this to chat — actually call back NOW.` }],
           };
         }
 
@@ -306,6 +306,24 @@ async function main() {
       throw new Error(`Unknown tool: ${request.params.name}`);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      const lowerMsg = errorMessage.toLowerCase();
+
+      // Call already in progress — guide to use continue_call
+      if (lowerMsg.includes('already in progress') || lowerMsg.includes('call already')) {
+        return {
+          content: [{ type: 'text', text: `A call is already active. Use continue_call with the active callId to keep talking, or end_call to hang up first.\n\nOriginal error: ${errorMessage}` }],
+          isError: true,
+        };
+      }
+
+      // Transient errors (STT, timeout, WebSocket) — retry after short wait
+      if (lowerMsg.includes('stt session') || lowerMsg.includes('timeout') || lowerMsg.includes('timed out') || lowerMsg.includes('websocket') || lowerMsg.includes('econnrefused') || lowerMsg.includes('econnreset')) {
+        return {
+          content: [{ type: 'text', text: `Transient error: ${errorMessage}\n\nACTION: Wait 2-3 seconds and retry the same tool call. This is usually a temporary issue that resolves on its own.` }],
+          isError: true,
+        };
+      }
+
       return {
         content: [{ type: 'text', text: `Error: ${errorMessage}` }],
         isError: true,
