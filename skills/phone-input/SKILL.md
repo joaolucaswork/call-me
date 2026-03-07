@@ -1,126 +1,162 @@
 # Phone Call Input Skill
 
 ## Description
-Call the user on the phone for real-time voice conversations. Use this when you need input, want to report on completed work, or need to discuss next steps.
 
-## When to Use This Skill
+Call the user (Lucas) on the phone. A ligacao e o UNICO canal de comunicacao confiavel — o Lucas tem dificuldades severas de visao e NAO consegue acompanhar o chat do Claude Code. Se voce nao ligar, ele NAO sabe que voce terminou, que tem duvidas, ou que precisa dar feedback.
 
-**Use when:**
-- You've **completed a significant task** and want to report status and ask what's next
-- You need **real-time voice input** for complex decisions
-- A question requires **back-and-forth discussion** to fully understand
-- You're **blocked** and need urgent clarification to proceed
-- You want to **celebrate a milestone** or walk the user through completed work
+**Regra geral**: Se voce tem algo a comunicar ao Lucas, LIGUE. Nunca apenas escreva no chat.
 
-**Do NOT use for:**
-- Simple yes/no questions (use text instead)
-- Routine status updates that don't need discussion
-- Information the user has already provided
+## Quando Ligar (Obrigatorio)
+
+| Momento | Exemplo |
+|---------|---------|
+| Ao finalizar qualquer task ou entrega | "Terminei a implementacao, fiz commit no branch dev." |
+| Ao ter qualquer pergunta ou duvida | "Tenho uma duvida sobre o comportamento esperado..." |
+| Ao precisar confirmar algo | "Posso deletar esse arquivo?" |
+| Ao apresentar resultados de investigacao | "Investiguei o bug e encontrei a causa..." |
+| Antes de respostas longas no chat | Liga primeiro, depois explica por voz |
 
 ## Tools
 
 ### `initiate_call`
-Start a phone call with the user.
+Inicia uma nova ligacao.
 
 **Parameters:**
-- `message` (string): What you want to say. Be natural and conversational.
+- `message` (string): O que voce quer dizer. Seja direto e resumido.
 
 **Returns:**
-- Call ID and the user's spoken response (transcribed to text)
+- `callId` e a resposta do usuario (transcrita para texto)
 
 ### `continue_call`
-Continue an active call with a follow-up message.
+Continua uma ligacao ativa enviando mensagem e ESPERANDO resposta do usuario.
 
 **Parameters:**
-- `call_id` (string): The call ID from `initiate_call`
-- `message` (string): Your follow-up message
+- `call_id` (string): O call ID retornado por `initiate_call`
+- `message` (string): Sua mensagem de follow-up
 
 **Returns:**
-- The user's response
+- A resposta do usuario
 
 ### `speak_to_user`
-Speak a message on an active call without waiting for a response. Use this to acknowledge requests or provide status updates before starting time-consuming operations.
+Fala uma mensagem na ligacao ativa SEM esperar resposta (fire-and-forget). Use para updates e acknowledgments.
 
 **Parameters:**
-- `call_id` (string): The call ID from `initiate_call`
-- `message` (string): What to say to the user
+- `call_id` (string): O call ID retornado por `initiate_call`
+- `message` (string): O que dizer ao usuario
 
 **Returns:**
-- Confirmation that the message was spoken
-
-**When to use:**
-- Acknowledge a request before starting a long operation (e.g., "Let me search for that...")
-- Provide status updates during multi-step tasks
-- Keep the conversation flowing naturally without awkward silences
+- Confirmacao de que a mensagem foi falada
 
 ### `end_call`
-End an active call with a closing message. If the user already hung up, returns conversation history.
+Encerra a ligacao com uma mensagem de despedida.
 
 **Parameters:**
-- `call_id` (string): The call ID from `initiate_call`
-- `message` (string): Your closing message (say goodbye!)
+- `call_id` (string): O call ID retornado por `initiate_call`
+- `message` (string): Mensagem de encerramento
 
 **Returns:**
-- Call duration in seconds
-- If user had already hung up: conversation history
+- Duracao da ligacao em segundos
 
 ### `get_call_status`
-Check if a call is still active, hung up (with preserved context), or not found.
+Verifica se a ligacao ainda esta ativa, se o usuario desligou, ou se nao foi encontrada.
 
 **Parameters:**
-- `call_id` (string): The call ID to check
+- `call_id` (string): O call ID a verificar
 
 **Returns:**
-- Status: `active`, `hung_up`, or `not_found`
-- For active/hung_up: conversation history and duration
+- Status: `active`, `hung_up`, ou `not_found`
+- Historico da conversa e duracao (para active/hung_up)
 
-## Example Usage
+## Metodos de Ligacao (Ordem de Tentativa)
 
-**Simple conversation:**
+Se um metodo falhar, tentar o proximo:
+
+1. **MCP Tool**: `mcp__plugin_callme_callme__initiate_call`
+2. **Script Local**: `bun ~/.claude/scripts/callme.js <action> "mensagem" [call_id]`
+3. **API Direta**: `POST http://localhost:3334/api/initiate_call`
+
+## Tratamento de Erros
+
+### `hungUp: true` ou `"Call was hung up by user"`
+
+O sinal de "hung up" NEM SEMPRE e confiavel — pode ser falso positivo.
+
+1. RELIGAR IMEDIATAMENTE com nova `initiate`
+2. Mensagem: "Oi Lucas, a ligacao caiu. Foi voce que desligou?"
+3. Se Lucas confirmar "sim" → encerrar a call na hora (`end`), sem falar mais nada
+4. Se Lucas disser "nao" ou der outra resposta → continuar normalmente
+
+### Erro generico (timeout, `"STT session not available"`, etc.)
+
+1. Esperar 2-3 segundos
+2. Tentar novamente com `initiate`
+3. Se falhar 3 vezes seguidas, tentar metodo alternativo (MCP → Script → API)
+4. Se TODOS falharem, informar no chat que nao conseguiu ligar e pedir ao Lucas para verificar o plugin
+
+### `"Call already in progress"` ou similar
+
+1. Se tem `callId` ativo → usar `continue` ou `speak` com ele
+2. Se NAO tem `callId` → iniciar nova ligacao com `initiate` (ignora o suposto call ativo)
+
+## Modo Permanente
+
+Quando o Lucas pedir "ligacao permanente" ou "fica na linha":
+
+- Manter a call ativa durante toda a sessao
+- Usar `speak` para updates que nao precisam de resposta
+- Usar `continue` para perguntas que precisam de resposta
+- Se a ligacao cair por qualquer motivo → RELIGAR AUTOMATICAMENTE
+- So encerrar quando o Lucas disser explicitamente "finalizar", "desligar", "pode encerrar"
+- NAO encerrar por inatividade — o Lucas pode estar pensando
+
+## Boas Praticas de Voz
+
+### Mensagens de `initiate` (primeira mensagem da ligacao)
+- Ser direto e resumido
+- Comecar com "Oi Lucas!" seguido do ponto principal
+- Ex: "Oi Lucas! Terminei as correcoes no setup. O toggle agora funciona e o texto mostra o canal correto."
+
+### Mensagens de `continue` (perguntas)
+- Fazer UMA pergunta clara por vez
+- Ex: "Quer que eu faca commit e push pro dev?"
+
+### Mensagens de `speak` (updates sem esperar resposta)
+- Curtas e informativas
+- Ex: "Comecei a implementar, deve levar uns minutos."
+
+### Mensagens de `end` (encerramento)
+- Breve confirmacao
+- Ex: "Pronto, tudo commitado. Ate mais!"
+
+## Exemplos de Uso
+
+**Fluxo tipico apos finalizar tarefa:**
 ```
-1. initiate_call: "Hey! I finished the auth system. Should I move on to the API endpoints?"
-2. User responds: "Yes, go ahead"
-3. end_call: "Perfect! I'll start on the API endpoints. Talk soon!"
+1. initiate_call: "Oi Lucas! Terminei a implementacao do auth. Fiz commit no branch dev."
+2. Lucas responde com instrucoes → executar e usar continue para dar feedback
+3. Lucas diz "ok" / "obrigado" → end_call: "Pronto, ate mais!"
 ```
 
-**Multi-turn conversation:**
+**Conversa com varias perguntas:**
 ```
-1. initiate_call: "I'm working on payments. Should I use Stripe or PayPal?"
-2. User: "Use Stripe"
-3. continue_call: "Got it. Do you want the full checkout flow or just a simple button?"
-4. User: "Full checkout flow"
-5. end_call: "Awesome, I'll build the full Stripe checkout. I'll let you know when it's ready!"
-```
-
-**Using speak_to_user for long operations:**
-```
-1. initiate_call: "Hey! I finished the database migration. What should I work on next?"
-2. User: "Can you look up the latest API documentation for Stripe?"
-3. speak_to_user: "Sure! Let me search for that. Give me a moment..."
-4. [Perform web search and gather information]
-5. continue_call: "I found the latest Stripe API docs. They released v2024.1 with new payment methods..."
-6. User: "Great, implement that"
-7. end_call: "Perfect! I'll implement the new payment methods. Talk soon!"
+1. initiate_call: "Oi Lucas! Estou trabalhando nos pagamentos. Devo usar Stripe ou PayPal?"
+2. Lucas: "Stripe"
+3. continue_call: "Quer o checkout completo ou so um botao simples?"
+4. Lucas: "Checkout completo"
+5. end_call: "Beleza, vou implementar o checkout completo com Stripe. Te ligo quando terminar!"
 ```
 
-## Automatic Hold Messages
+**Usando speak para operacoes longas:**
+```
+1. initiate_call: "Oi Lucas! Terminei a migracao do banco. O que faco agora?"
+2. Lucas: "Pesquisa a doc mais recente do Stripe"
+3. speak_to_user: "Beleza, vou pesquisar. Um momento..."
+4. [Executa a pesquisa]
+5. continue_call: "Achei a doc atualizada. A versao mais recente tem novos metodos de pagamento..."
+6. Lucas: "Implementa isso"
+7. end_call: "Perfeito, vou implementar. Te ligo quando estiver pronto!"
+```
 
-The server automatically plays periodic hold messages (every 15 seconds by default) when Claude hasn't spoken for a while. This prevents awkward silence during long operations. The timer resets every time you use `speak_to_user`, `continue_call`, or any speaking tool.
+## Resumo
 
-## Handling Hangups
-
-When the user hangs up during a call:
-- The call state is preserved for 5 minutes with full conversation history
-- `continue_call` and `speak_to_user` will return the conversation history instead of an error
-- Use `get_call_status` to check if a call is still active before trying to speak
-- You can call back using `initiate_call` — the conversation history from the previous call is available
-
-## Best Practices
-
-1. **Be conversational** - Talk naturally, like a real conversation
-2. **Provide context** - Explain what you've done before asking questions
-3. **Offer clear options** - Make decisions easy with specific choices
-4. **Use speak_to_user for acknowledgments** - Before time-consuming operations (searches, file reads, etc.), use `speak_to_user` to acknowledge the request so the user isn't left wondering what's happening
-5. **Always end gracefully** - Say goodbye and state what you'll do next
-6. **Check call status** - If you suspect the user may have hung up, use `get_call_status` before speaking
-7. **Call back when appropriate** - If the user hangs up and you have results to share, call them back
+> **Sempre ligue. Se cair, religue. Se der erro, tente de novo. O Lucas so sabe o que esta acontecendo atraves da ligacao. Sem ligacao = sem comunicacao = falha no proposito.**
