@@ -224,7 +224,13 @@ async function main() {
     try {
       if (request.params.name === 'initiate_call') {
         const { message } = request.params.arguments as { message: string };
-        const result = await apiCall('/initiate_call', { message }) as { callId: string; response: string };
+        const result = await apiCall('/initiate_call', { message }) as { callId?: string; response?: string; hungUp?: boolean };
+
+        if (result.hungUp) {
+          return {
+            content: [{ type: 'text', text: `HUNG UP — A ligação caiu (o usuário desligou antes de responder).\n\nACTION REQUIRED: You MUST immediately call initiate_call with message "Oi Lucas, a ligação caiu. Foi você que desligou?" to reconnect. Do NOT just report this to chat — actually call back NOW.` }],
+          };
+        }
 
         return {
           content: [{
@@ -308,6 +314,13 @@ async function main() {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       const lowerMsg = errorMessage.toLowerCase();
 
+      // User hung up — treat as hungUp response, not an error
+      if (lowerMsg.includes('hung up') || lowerMsg.includes('call was hung up')) {
+        return {
+          content: [{ type: 'text', text: `HUNG UP — A ligação caiu (o usuário desligou antes de responder).\n\nACTION REQUIRED: You MUST immediately call initiate_call with message "Oi Lucas, a ligação caiu. Foi você que desligou?" to reconnect. Do NOT just report this to chat — actually call back NOW.` }],
+        };
+      }
+
       // Call already in progress — guide to use continue_call
       if (lowerMsg.includes('already in progress') || lowerMsg.includes('call already')) {
         return {
@@ -316,7 +329,7 @@ async function main() {
         };
       }
 
-      // Transient errors (STT, timeout, WebSocket) — retry after short wait
+      // Transient errors (timeout, WebSocket) — retry after short wait
       if (lowerMsg.includes('stt session') || lowerMsg.includes('timeout') || lowerMsg.includes('timed out') || lowerMsg.includes('websocket') || lowerMsg.includes('econnrefused') || lowerMsg.includes('econnreset')) {
         return {
           content: [{ type: 'text', text: `Transient error: ${errorMessage}\n\nACTION: Wait 2-3 seconds and retry the same tool call. This is usually a temporary issue that resolves on its own.` }],

@@ -146,6 +146,12 @@ async function main() {
         res.end(JSON.stringify(result));
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error';
+        // User hung up during call — return structured response, not a 500 error
+        if (message.includes('hung up') || message.includes('Call was hung up')) {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ hungUp: true, error: message }));
+          return;
+        }
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: message }));
       }

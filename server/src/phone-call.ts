@@ -834,6 +834,10 @@ export class CallManager {
    */
   private async listenWithTimeout(state: CallState, timeoutMs: number): Promise<string> {
     if (!state.sttSession) {
+      if (state.hungUp) {
+        this.preserveHungUpCall(state.callId);
+        throw new Error('Call was hung up by user');
+      }
       throw new Error('STT session not available');
     }
 
@@ -1200,6 +1204,10 @@ export class CallManager {
     console.error(`[${state.callId}] Listening...`);
 
     if (!state.sttSession) {
+      if (state.hungUp) {
+        this.preserveHungUpCall(state.callId);
+        throw new Error('Call was hung up by user');
+      }
       throw new Error('STT session not available');
     }
 
