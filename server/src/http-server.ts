@@ -10,6 +10,8 @@
 import { CallManager, loadServerConfig } from './phone-call.js';
 import { startNgrok, stopNgrok } from './ngrok.js';
 import { createServer } from 'http';
+import { writeSession, completeSession, cleanupAllSessions, type InboundSession } from './session-manager.js';
+import { spawnClaudeForCall, hasActiveSpawn } from './claude-spawner.js';
 
 // Store call manager globally for API access
 let callManager: CallManager | null = null;
@@ -52,10 +54,35 @@ async function main() {
 
   callManager = new CallManager(serverConfig);
 
+  // Clean up stale sessions from previous runs
+  cleanupAllSessions();
+
   // Set up inbound call notification handler
   callManager.setInboundCallHandler((callId, from, transcript) => {
     console.error(`[Inbound] Call ${callId} from ${from}: "${transcript}"`);
-    console.error('[Inbound] Pending call info written — hooks will notify Claude');
+
+    // Write session file
+    const session: InboundSession = {
+      callId,
+      from,
+      transcript,
+      timestamp: Date.now(),
+      status: 'pending',
+    };
+    writeSession(session);
+
+    // Auto-spawn Claude if no MCP sessions are connected and no active spawn
+    if (connectedSessions === 0 && !hasActiveSpawn()) {
+      console.error('[Inbound] No Claude sessions connected — auto-spawning Claude CLI...');
+      const spawned = spawnClaudeForCall(session);
+      if (spawned) {
+        console.error('[Inbound] Claude CLI spawned successfully');
+      } else {
+        console.error('[Inbound] Failed to spawn Claude CLI — falling back to hooks');
+      }
+    } else {
+      console.error(`[Inbound] ${connectedSessions} Claude session(s) connected — hooks will notify`);
+    }
   });
 
   callManager.startServer();
@@ -78,7 +105,7 @@ async function main() {
     // Health check doesn't need POST or body
     if (url.pathname === '/api/health') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ status: 'ok', publicUrl, connectedSessions }));
+      res.end(JSON.stringify({ status: 'ok', publicUrl, connectedSessions, hasActiveSpawn: hasActiveSpawn() }));
       return;
     }
 
@@ -161,6 +188,7 @@ async function main() {
   // Graceful shutdown
   const shutdown = async () => {
     console.error('\nShutting down...');
+    cleanupAllSessions();
     callManager?.shutdown();
     apiServer.close();
     if (!usingExternalTunnel) {
