@@ -12,6 +12,7 @@ import { startNgrok, stopNgrok } from './ngrok.js';
 import { createServer } from 'http';
 import { writeSession, completeSession, cleanupAllSessions, type InboundSession } from './session-manager.js';
 import { spawnClaudeForCall, hasActiveSpawn } from './claude-spawner.js';
+import { findMostRecentProject, formatProjectSummary } from './project-scanner.js';
 
 // Store call manager globally for API access
 let callManager: CallManager | null = null;
@@ -51,6 +52,24 @@ async function main() {
     await stopNgrok();
     process.exit(1);
   }
+
+  // Dynamic greeting: scan most recent project and include in greeting
+  serverConfig.getInboundGreeting = () => {
+    const project = findMostRecentProject();
+    if (project) {
+      const commitSummary = project.recentCommits.slice(0, 3).map(c => {
+        // Remove commit hash prefix
+        const msg = c.replace(/^[a-f0-9]+ /, '');
+        return msg;
+      }).join(', ');
+
+      return `Oi Lucas! Analisei seus projetos e o mais recente é ${project.name}, na branch ${project.branch}. ` +
+        `Os últimos commits foram: ${commitSummary}. ` +
+        (project.gitStatus !== '(clean)' ? `Tem mudanças pendentes. ` : '') +
+        `Quer trabalhar nele ou em outro projeto?`;
+    }
+    return serverConfig.inboundGreeting;
+  };
 
   callManager = new CallManager(serverConfig);
 

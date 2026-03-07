@@ -44,7 +44,8 @@ export interface ServerConfig {
   providers: ProviderRegistry;
   providerConfig: ProviderConfig;  // For webhook signature verification
   transcriptTimeoutMs: number;
-  inboundGreeting: string;  // Greeting for incoming calls
+  inboundGreeting: string;  // Fallback greeting for incoming calls
+  getInboundGreeting?: () => string;  // Dynamic greeting generator (overrides inboundGreeting)
   holdIntervalMs: number;  // Interval for keepalive hold messages (0 = disabled)
   holdMessages: string[];  // Messages to cycle through during hold
 }
@@ -194,6 +195,17 @@ export class CallManager {
   /**
    * Reset keepalive timer (called when Claude sends audio).
    */
+  private getGreeting(): string {
+    if (this.config.getInboundGreeting) {
+      try {
+        return this.config.getInboundGreeting();
+      } catch {
+        // Fallback to static greeting
+      }
+    }
+    return this.config.inboundGreeting;
+  }
+
   private resetKeepalive(state: CallState): void {
     if (this.config.holdIntervalMs <= 0) return;
     this.stopKeepalive(state);
@@ -710,7 +722,7 @@ export class CallManager {
       }
 
       // Play greeting
-      const audioData = await this.generateTTSAudio(this.config.inboundGreeting);
+      const audioData = await this.generateTTSAudio(this.getGreeting());
       await this.sendPreGeneratedAudio(state, audioData);
 
       if (state.hungUp) {
@@ -720,7 +732,7 @@ export class CallManager {
 
       // Listen for user's response
       const transcript = await this.listenWithTimeout(state, 30000);
-      state.conversationHistory.push({ speaker: 'claude', message: this.config.inboundGreeting });
+      state.conversationHistory.push({ speaker: 'claude', message: this.getGreeting() });
       state.conversationHistory.push({ speaker: 'user', message: transcript });
 
       console.error(`[${callId}] User said: ${transcript}`);
@@ -793,7 +805,7 @@ export class CallManager {
         return;
       }
 
-      const audioData = await this.generateTTSAudio(this.config.inboundGreeting);
+      const audioData = await this.generateTTSAudio(this.getGreeting());
       await this.sendPreGeneratedAudio(state, audioData);
 
       if (state.hungUp) {
@@ -802,7 +814,7 @@ export class CallManager {
       }
 
       const transcript = await this.listenWithTimeout(state, 30000);
-      state.conversationHistory.push({ speaker: 'claude', message: this.config.inboundGreeting });
+      state.conversationHistory.push({ speaker: 'claude', message: this.getGreeting() });
       state.conversationHistory.push({ speaker: 'user', message: transcript });
 
       console.error(`[${callId}] User said: ${transcript}`);
