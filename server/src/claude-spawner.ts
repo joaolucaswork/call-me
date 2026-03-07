@@ -2,49 +2,20 @@
  * Claude Spawner
  *
  * Auto-spawns a Claude Code CLI session when an inbound call arrives
- * and no active Claude session is connected. Finds the most recently
- * modified project in ~/Documents/GitHub/ to use as working directory.
+ * and no active Claude session is connected. Uses project-scanner to
+ * gather context about the most recent project before spawning.
  */
 
 import { spawn } from 'child_process';
-import { readdirSync, statSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { InboundSession, claimSession } from './session-manager.js';
+import { findMostRecentProject, formatProjectSummary } from './project-scanner.js';
 
 const CLAUDE_BIN = join(homedir(), '.local', 'bin', 'claude');
-const GITHUB_DIR = join(homedir(), 'Documents', 'GitHub');
 
 // Track spawned processes to avoid duplicates
 let activeSpawn: { pid: number; callId: string } | null = null;
-
-/**
- * Find the most recently modified project directory in ~/Documents/GitHub/
- */
-function findMostRecentProject(): string | null {
-  try {
-    const entries = readdirSync(GITHUB_DIR, { withFileTypes: true })
-      .filter(e => e.isDirectory() && !e.name.startsWith('.'));
-
-    let newest: { name: string; mtime: number } | null = null;
-
-    for (const entry of entries) {
-      const fullPath = join(GITHUB_DIR, entry.name);
-      try {
-        const stat = statSync(fullPath);
-        if (!newest || stat.mtimeMs > newest.mtime) {
-          newest = { name: entry.name, mtime: stat.mtimeMs };
-        }
-      } catch {
-        continue;
-      }
-    }
-
-    return newest ? join(GITHUB_DIR, newest.name) : null;
-  } catch {
-    return null;
-  }
-}
 
 /**
  * Spawn a Claude Code CLI process to handle an inbound call.
@@ -56,14 +27,14 @@ export function spawnClaudeForCall(session: InboundSession): boolean {
     return false;
   }
 
-  const projectDir = findMostRecentProject();
-  if (!projectDir) {
+  const project = findMostRecentProject();
+  if (!project) {
     console.error('[Spawner] No project found in ~/Documents/GitHub/');
     return false;
   }
 
-  const projectName = projectDir.split('/').pop();
-  console.error(`[Spawner] Most recent project: ${projectName} (${projectDir})`);
+  const summary = formatProjectSummary(project);
+  console.error(`[Spawner] Most recent project: ${project.name} (${project.path})`);
 
   const prompt = [
     `URGENT: There is an active inbound phone call waiting for you!`,
@@ -72,17 +43,23 @@ export function spawnClaudeForCall(session: InboundSession): boolean {
     `Caller: ${session.from}`,
     `They said: "${session.transcript}"`,
     ``,
-    `You are working in the project "${projectName}" (${projectDir}).`,
+    `--- PROJECT CONTEXT ---`,
+    summary,
+    `--- END PROJECT CONTEXT ---`,
     ``,
     `INSTRUCTIONS:`,
     `1. Use continue_call with call_id="${session.callId}" to respond to the caller immediately`,
-    `2. After greeting them, suggest working on this project ("${projectName}")`,
-    `3. Keep the call active and follow the caller's instructions`,
-    `4. If the caller hangs up, wait for them to call back`,
-    `5. Do NOT end the call unless explicitly asked to`,
+    `2. Greet them and present what you found about the project "${project.name}":`,
+    `   - What the project is about (from description)`,
+    `   - What was worked on recently (from commits)`,
+    `   - Any pending changes (from git status)`,
+    `3. Ask what they'd like to work on`,
+    `4. Keep the call active and follow the caller's instructions`,
+    `5. If the caller hangs up, wait for them to call back`,
+    `6. Do NOT end the call unless explicitly asked to`,
   ].join('\n');
 
-  console.error(`[Spawner] Spawning Claude CLI in ${projectDir}...`);
+  console.error(`[Spawner] Spawning Claude CLI in ${project.path}...`);
 
   try {
     const child = spawn(CLAUDE_BIN, [
@@ -90,7 +67,7 @@ export function spawnClaudeForCall(session: InboundSession): boolean {
       '--print',
       prompt,
     ], {
-      cwd: projectDir,
+      cwd: project.path,
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: true,
       env: { ...process.env, HOME: homedir(), CLAUDECODE: '', CLAUDE_CODE_ENTRYPOINT: '' },
