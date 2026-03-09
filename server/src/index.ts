@@ -17,6 +17,9 @@ import { fileURLToPath } from 'url';
 const API_PORT = parseInt(process.env.LEIN_API_PORT || '3334', 10);
 const API_BASE = `http://localhost:${API_PORT}/api`;
 
+// Ensure pm2 and bun are in PATH for child processes
+const PM2_BIN = '/Users/lucas/.bun/bin/pm2';
+
 let httpServerProcess: Subprocess | null = null;
 let sessionRegistered = false;
 
@@ -77,14 +80,75 @@ async function waitForExistingServer(attempts: number = 5): Promise<boolean> {
   return false;
 }
 
+async function isPm2Running(): Promise<boolean> {
+  try {
+    const proc = spawn({
+      cmd: [PM2_BIN, 'jlist'],
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    const text = await new Response(proc.stdout).text();
+    await proc.exited;
+    const list = JSON.parse(text);
+    return Array.isArray(list) && list.some((p: any) => p.name === 'lein' && p.pm2_env?.status === 'online');
+  } catch {
+    return false;
+  }
+}
+
+async function startViaPm2(): Promise<void> {
+  const __dirname = dirname(fileURLToPath(import.meta.url));
+  const ecosystemPath = resolve(__dirname, '..', 'ecosystem.config.cjs');
+
+  console.error('Starting Lein via PM2...');
+
+  // Check if PM2 has the lein process registered (even if stopped)
+  let hasProcess = false;
+  try {
+    const proc = spawn({ cmd: [PM2_BIN, 'jlist'], stdout: 'pipe', stderr: 'pipe' });
+    const text = await new Response(proc.stdout).text();
+    await proc.exited;
+    const list = JSON.parse(text);
+    hasProcess = Array.isArray(list) && list.some((p: any) => p.name === 'lein');
+  } catch {}
+
+  if (hasProcess) {
+    // PM2 knows about the process — restart it
+    const proc = spawn({ cmd: [PM2_BIN, 'restart', 'ecosystem.config.cjs'], stdout: 'pipe', stderr: 'inherit', cwd: resolve(__dirname, '..') });
+    await proc.exited;
+  } else {
+    // First time — start from ecosystem config
+    const proc = spawn({ cmd: [PM2_BIN, 'start', 'ecosystem.config.cjs'], stdout: 'pipe', stderr: 'inherit', cwd: resolve(__dirname, '..') });
+    await proc.exited;
+  }
+}
+
 async function startHttpServer(): Promise<void> {
+  // Try PM2 first (preferred — gives us auto-restart, file watching, ngrok)
+  try {
+    await startViaPm2();
+
+    // Wait for HTTP server to become healthy via PM2
+    const maxAttempts = 30;
+    for (let i = 0; i < maxAttempts; i++) {
+      await new Promise(r => setTimeout(r, 1000));
+      if (await checkServerHealth()) {
+        console.error('HTTP server is ready (via PM2)');
+        return;
+      }
+    }
+    console.error('PM2 started but server not healthy after 30s, falling back to direct spawn...');
+  } catch (err) {
+    console.error('PM2 start failed, falling back to direct spawn:', err);
+  }
+
+  // Fallback: direct spawn (in case PM2 is not available)
   const __dirname = dirname(fileURLToPath(import.meta.url));
   const httpServerPath = resolve(__dirname, 'http-server.ts');
 
-  console.error('Starting HTTP server...');
+  console.error('Starting HTTP server directly...');
   let processExited = false;
 
-  // Build public URL from ngrok domain if not already set
   const env = { ...process.env };
   if (!env.LEIN_PUBLIC_URL && env.LEIN_NGROK_DOMAIN) {
     env.LEIN_PUBLIC_URL = `https://${env.LEIN_NGROK_DOMAIN}`;
@@ -97,20 +161,17 @@ async function startHttpServer(): Promise<void> {
     env,
   });
 
-  // Monitor child process exit (e.g. EADDRINUSE → clean exit)
   httpServerProcess.exited.then(() => {
     processExited = true;
   });
 
-  // Wait for the HTTP server to become healthy
   const maxAttempts = 30;
   for (let i = 0; i < maxAttempts; i++) {
     await new Promise(r => setTimeout(r, 1000));
     if (await checkServerHealth()) {
-      console.error('HTTP server is ready');
+      console.error('HTTP server is ready (direct)');
       return;
     }
-    // If our child exited (port taken), another server is running — wait for it
     if (processExited) {
       console.error('HTTP server process exited (port likely in use), waiting for existing server...');
       httpServerProcess = null;
@@ -128,16 +189,22 @@ async function startHttpServer(): Promise<void> {
 
 async function main() {
   // Check if HTTP server is already running
-  // Retry a few times first — another tab may be starting it right now
   if (await checkServerHealth()) {
     console.error('Connected to existing HTTP server');
   } else {
-    console.error('HTTP server not found, waiting briefly for another instance...');
-    const foundExisting = await waitForExistingServer(3);
-    if (foundExisting) {
-      console.error('Connected to existing HTTP server');
-    } else {
+    console.error('HTTP server not found, checking PM2...');
+    // If PM2 has lein but it's stopped/errored, restart via PM2
+    const pm2Running = await isPm2Running();
+    if (!pm2Running) {
       await startHttpServer();
+    } else {
+      // PM2 says it's online but health check failed — wait a bit
+      const foundExisting = await waitForExistingServer(5);
+      if (foundExisting) {
+        console.error('Connected to existing HTTP server');
+      } else {
+        await startHttpServer();
+      }
     }
   }
 
@@ -240,6 +307,54 @@ async function main() {
             properties: {
               limit: { type: 'number', description: 'Max messages to return (default 20)' },
               since_timestamp: { type: 'number', description: 'Only return messages after this Unix timestamp (ms)' },
+            },
+          },
+        },
+        // Memory tools (Mem0)
+        {
+          name: 'remember',
+          description: 'Save a memory/fact to persistent storage. Use this to remember preferences, decisions, project context, or anything worth preserving across sessions. Memories are automatically deduplicated.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              text: { type: 'string', description: 'The fact or memory to save. Be specific and concise.' },
+              project: { type: 'string', description: 'Project name (e.g. "lein", "kapso"). Omit for global memories (personal preferences, facts about the user).' },
+            },
+            required: ['text'],
+          },
+        },
+        {
+          name: 'recall',
+          description: 'Search memories semantically. Returns the most relevant memories matching your query. Use this to retrieve context before starting work, check past decisions, or find user preferences.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              query: { type: 'string', description: 'What to search for. Natural language query.' },
+              project: { type: 'string', description: 'Project name to search within. Omit to search global memories.' },
+              limit: { type: 'number', description: 'Max results (default 10)' },
+            },
+            required: ['query'],
+          },
+        },
+        {
+          name: 'forget',
+          description: 'Delete a specific memory by ID. Use when a memory is outdated or incorrect.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              memory_id: { type: 'string', description: 'The memory ID to delete' },
+            },
+            required: ['memory_id'],
+          },
+        },
+        {
+          name: 'list_memories',
+          description: 'List all stored memories, optionally filtered by project. Use to review what has been remembered.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              project: { type: 'string', description: 'Project name to filter. Omit for global memories.' },
+              limit: { type: 'number', description: 'Max results (default 20)' },
             },
           },
         },
@@ -392,6 +507,45 @@ async function main() {
         }).join('\n');
 
         return { content: [{ type: 'text', text: `${result.messages.length} WhatsApp message(s):\n\n${formatted}` }] };
+      }
+
+      // Memory tools
+      if (request.params.name === 'remember') {
+        const { text, project } = request.params.arguments as { text: string; project?: string };
+        const result = await apiCall('/memory/remember', { text, project });
+        const memories = result as { id: string; memory: string }[];
+        const summary = Array.isArray(memories) && memories.length > 0
+          ? memories.map(m => `- ${m.memory} (id: ${m.id})`).join('\n')
+          : 'Memory saved.';
+        return { content: [{ type: 'text', text: `Remembered${project ? ` [${project}]` : ' [global]'}:\n${summary}` }] };
+      }
+
+      if (request.params.name === 'recall') {
+        const { query, project, limit } = request.params.arguments as { query: string; project?: string; limit?: number };
+        const result = await apiCall('/memory/recall', { query, project, limit });
+        const memories = result as { id: string; memory: string; score?: number }[];
+        if (!Array.isArray(memories) || memories.length === 0) {
+          return { content: [{ type: 'text', text: `No memories found for: "${query}"${project ? ` in project ${project}` : ''}` }] };
+        }
+        const formatted = memories.map(m => `- ${m.memory} (id: ${m.id}${m.score ? `, score: ${m.score.toFixed(2)}` : ''})`).join('\n');
+        return { content: [{ type: 'text', text: `Found ${memories.length} memory/memories${project ? ` [${project}]` : ' [global]'}:\n${formatted}` }] };
+      }
+
+      if (request.params.name === 'forget') {
+        const { memory_id } = request.params.arguments as { memory_id: string };
+        await apiCall('/memory/forget', { memory_id });
+        return { content: [{ type: 'text', text: `Memory ${memory_id} deleted.` }] };
+      }
+
+      if (request.params.name === 'list_memories') {
+        const { project, limit } = request.params.arguments as { project?: string; limit?: number };
+        const result = await apiCall('/memory/list', { project, limit });
+        const memories = result as { id: string; memory: string }[];
+        if (!Array.isArray(memories) || memories.length === 0) {
+          return { content: [{ type: 'text', text: `No memories stored${project ? ` for project ${project}` : ' globally'}.` }] };
+        }
+        const formatted = memories.map(m => `- ${m.memory} (id: ${m.id})`).join('\n');
+        return { content: [{ type: 'text', text: `${memories.length} memory/memories${project ? ` [${project}]` : ' [global]'}:\n${formatted}` }] };
       }
 
       throw new Error(`Unknown tool: ${request.params.name}`);
