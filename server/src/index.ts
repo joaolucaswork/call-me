@@ -464,11 +464,9 @@ async function main() {
         const to = args.to || ''; // Empty = use default from config
         const msgType = args.type || 'text';
 
-        // Prefix messages with session ID so user can `claude --resume <id>`
-        const sessionId = process.env.LEIN_CLAUDE_SESSION_ID;
-        const prefix = sessionId ? `[${sessionId}]\n` : '';
-        const prefixedMessage = prefix + (args.message || '');
-        const prefixedCaption = args.caption ? prefix + args.caption : args.caption;
+        // Session ID prefix is now handled server-side in http-server.ts
+        const prefixedMessage = args.message || '';
+        const prefixedCaption = args.caption;
 
         let result: any;
         switch (msgType) {

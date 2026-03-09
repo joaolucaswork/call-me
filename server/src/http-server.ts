@@ -11,7 +11,7 @@ import { CallManager, loadServerConfig } from './phone-call.js';
 import { startNgrok, stopNgrok } from './ngrok.js';
 import { createServer } from 'http';
 import { writeSession, completeSession, cleanupAllSessions, type InboundSession } from './session-manager.js';
-import { spawnClaudeForCall, spawnClaudeForWhatsApp, hasActiveSpawn, getActiveSessionCount, resetSessionForPhone } from './claude-spawner.js';
+import { spawnClaudeForCall, spawnClaudeForWhatsApp, hasActiveSpawn, getActiveSessionCount, resetSessionForPhone, getClaudeSessionIdForPhone } from './claude-spawner.js';
 import { ensureWorkspace } from './workspace.js';
 import { findMostRecentProject, formatProjectSummary } from './project-scanner.js';
 import {
@@ -326,9 +326,14 @@ async function main() {
             break;
 
           // WhatsApp API routes
-          case '/api/whatsapp/send_text':
-            result = await whatsappSendLongText(data.to, data.message);
+          case '/api/whatsapp/send_text': {
+            // Prefix messages with Claude session ID so user can `claude --resume <id>`
+            const resolvedTo = data.to || process.env.LEIN_USER_WHATSAPP_NUMBER || process.env.LEIN_USER_PHONE_NUMBER || '';
+            const claudeSessionId = resolvedTo ? getClaudeSessionIdForPhone(resolvedTo) : undefined;
+            const sessionPrefix = claudeSessionId ? `[${claudeSessionId}]\n` : '';
+            result = await whatsappSendLongText(data.to, sessionPrefix + data.message);
             break;
+          }
           case '/api/whatsapp/send_image':
             result = await whatsappSendImage(data.to, data.image_url, data.caption);
             break;

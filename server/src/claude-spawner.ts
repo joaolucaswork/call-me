@@ -208,36 +208,58 @@ interface SpawnOptions {
   resume?: boolean;
 }
 
+function buildTmuxSessionName(sessionId: string, source: 'call' | 'whatsapp'): string {
+  // Sanitize for tmux (no dots or colons)
+  const safe = sessionId.replace(/[^a-zA-Z0-9_-]/g, '-').slice(0, 40);
+  return `lein-${source}-${safe}`;
+}
+
 function doSpawn(prompt: string, sessionId: string, source: 'call' | 'whatsapp', phone?: string, options?: SpawnOptions): boolean {
   console.error(`[Lein:Spawner] Spawning Claude session ${sessionId} in ${WORKSPACE_DIR}`);
 
   try {
-    const args = ['--dangerously-skip-permissions', '-p', prompt];
+    const claudeArgs = ['--dangerously-skip-permissions', '-p', prompt];
 
     // Persistent session support
     if (options?.claudeSessionId) {
       if (options.resume) {
-        args.unshift('--resume', options.claudeSessionId);
+        claudeArgs.unshift('--resume', options.claudeSessionId);
       } else {
-        args.unshift('--session-id', options.claudeSessionId);
+        claudeArgs.unshift('--session-id', options.claudeSessionId);
       }
     }
 
-    const child = spawn(CLAUDE_BIN, args, {
+    // Build environment exports for tmux
+    const envVars: Record<string, string> = {
+      HOME: homedir(),
+      CLAUDECODE: '',
+      CLAUDE_CODE_ENTRYPOINT: '',
+      ...(options?.claudeSessionId ? { LEIN_CLAUDE_SESSION_ID: options.claudeSessionId } : {}),
+    };
+
+    const envExports = Object.entries(envVars)
+      .map(([k, v]) => `export ${k}=${JSON.stringify(v)}`)
+      .join('; ');
+
+    // Escape the prompt for shell embedding
+    const escapedArgs = claudeArgs.map(a => `'${a.replace(/'/g, "'\\''")}'`).join(' ');
+    const tmuxName = buildTmuxSessionName(sessionId, source);
+    const shellCmd = `cd ${JSON.stringify(WORKSPACE_DIR)} && ${envExports}; ${CLAUDE_BIN} ${escapedArgs}`;
+
+    const child = spawn('tmux', [
+      'new-session', '-d', '-s', tmuxName, shellCmd,
+    ], {
       cwd: WORKSPACE_DIR,
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: true,
       env: {
         ...process.env,
         HOME: homedir(),
-        CLAUDECODE: '',
-        CLAUDE_CODE_ENTRYPOINT: '',
-        ...(options?.claudeSessionId ? { LEIN_CLAUDE_SESSION_ID: options.claudeSessionId } : {}),
       },
     });
 
     if (!child.pid) {
-      console.error('[Lein:Spawner] Failed to spawn Claude process');
+      console.error('[Lein:Spawner] Failed to spawn tmux session');
       return false;
     }
 
@@ -246,6 +268,7 @@ function doSpawn(prompt: string, sessionId: string, source: 'call' | 'whatsapp',
       sessionId,
       source,
       startedAt: Date.now(),
+      phone,
       claudeSessionId: options?.claudeSessionId,
     });
 
@@ -253,7 +276,7 @@ function doSpawn(prompt: string, sessionId: string, source: 'call' | 'whatsapp',
       claimSession(sessionId, child.pid);
     }
 
-    console.error(`[Lein:Spawner] Claude spawned with PID ${child.pid} (session: ${sessionId})`);
+    console.error(`[Lein:Spawner] Claude spawned in tmux session "${tmuxName}" (PID ${child.pid})`);
 
     child.stdout?.on('data', (data: Buffer) => {
       console.error(`[Lein:${child.pid}:stdout] ${data.toString().trim()}`);
@@ -264,12 +287,12 @@ function doSpawn(prompt: string, sessionId: string, source: 'call' | 'whatsapp',
     });
 
     child.on('exit', (code) => {
-      console.error(`[Lein:Spawner] Claude PID ${child.pid} exited with code ${code}`);
+      console.error(`[Lein:Spawner] tmux session "${tmuxName}" exited with code ${code}`);
       activeSessions.delete(sessionId);
     });
 
     child.on('error', (err) => {
-      console.error(`[Lein:Spawner] Claude spawn error:`, err.message);
+      console.error(`[Lein:Spawner] tmux spawn error:`, err.message);
       activeSessions.delete(sessionId);
     });
 
@@ -291,4 +314,27 @@ export function getActiveSessions(): Map<string, SpawnedSession> {
 
 export function getActiveSessionCount(): number {
   return activeSessions.size;
+}
+
+/**
+ * Look up the Claude session UUID for a given phone number.
+ * Checks active spawned sessions first, then persistent session map.
+ * Returns the UUID that can be used with `claude --resume <id>`.
+ */
+export function getClaudeSessionIdForPhone(phone: string): string | undefined {
+  // Check active spawned sessions
+  for (const session of activeSessions.values()) {
+    if (session.phone === phone && session.claudeSessionId) {
+      return session.claudeSessionId;
+    }
+  }
+  // Fallback to persistent session map
+  const persistent = persistentSessions.get(phone);
+  if (persistent) {
+    const age = Date.now() - persistent.lastUsed;
+    if (age < SESSION_TTL_MS) {
+      return persistent.uuid;
+    }
+  }
+  return undefined;
 }
