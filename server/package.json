@@ -15,6 +15,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.4",
     "@ngrok/ngrok": "^1.4.1",
+    "mem0ai": "^2.2.4",
     "openai": "^4.77.3",
     "ws": "^8.18.0"
   },
