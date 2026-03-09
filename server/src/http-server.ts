@@ -137,9 +137,9 @@ async function main() {
     };
     writeSession(session);
 
-    // Auto-spawn Claude if no MCP sessions are connected (multi-session: always spawn)
-    if (connectedSessions === 0) {
-      console.error('[Lein] No MCP sessions connected — auto-spawning Claude CLI...');
+    // Auto-spawn Claude if no sessions exist (connected OR spawning)
+    if (connectedSessions === 0 && getActiveSessionCount() === 0) {
+      console.error('[Lein] No sessions active — auto-spawning Claude CLI...');
       const spawned = await spawnClaudeForCall(session);
       if (spawned) {
         console.error('[Lein] Claude CLI spawned successfully');
@@ -147,7 +147,7 @@ async function main() {
         console.error('[Lein] Failed to spawn Claude CLI — falling back to hooks');
       }
     } else {
-      console.error(`[Lein] ${connectedSessions} MCP session(s) connected — hooks will notify`);
+      console.error(`[Lein] ${connectedSessions} MCP + ${getActiveSessionCount()} spawned session(s) — hooks will notify`);
     }
   });
 
@@ -164,10 +164,10 @@ async function main() {
       console.error(`[Lein] WhatsApp /nova from ${msg.from} — forcing new session`);
       // Override message text with clean (prefix-stripped) version
       msg.text = parsed.cleanMessage || messageText;
-      if (connectedSessions === 0) {
+      if (connectedSessions === 0 && getActiveSessionCount() === 0) {
         await spawnClaudeForWhatsApp(msg);
       }
-      // If MCP connected, it'll be read via read_whatsapp
+      // If MCP or spawn active, it'll be read via read_whatsapp
       return;
     }
 
@@ -204,7 +204,7 @@ async function main() {
     }
 
     // No active call — default behavior
-    if (connectedSessions === 0) {
+    if (connectedSessions === 0 && getActiveSessionCount() === 0) {
       console.error(`[Lein] WhatsApp from ${msg.from} — auto-spawning Claude session`);
       const spawned = await spawnClaudeForWhatsApp(msg);
       if (spawned) {
@@ -213,7 +213,7 @@ async function main() {
         console.error('[Lein] Failed to spawn Claude CLI for WhatsApp');
       }
     } else {
-      console.error(`[Lein] ${connectedSessions} MCP session(s) connected — message will be read via read_whatsapp`);
+      console.error(`[Lein] ${connectedSessions} MCP + ${getActiveSessionCount()} spawned session(s) — message will be read via read_whatsapp`);
     }
   });
 
