@@ -76,6 +76,7 @@ export function createPhoneProvider(config: ProviderConfig): PhoneProvider {
     accountSid: config.phoneAccountSid,
     authToken: config.phoneAuthToken,
     phoneNumber: config.phoneNumber,
+    voice: config.ttsVoice,
   });
   return provider;
 }

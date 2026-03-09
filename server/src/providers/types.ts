@@ -38,15 +38,16 @@ export interface PhoneProvider {
   startStreaming(callControlId: string, streamUrl: string): Promise<void>;
 
   /**
-   * Get XML response for connecting media stream (used in webhooks)
+   * Get TwiML XML for connecting ConversationRelay (used in webhooks)
    */
-  getStreamConnectXml(streamUrl: string, statusCallbackUrl?: string): string;
+  getConnectXml(wsUrl: string, options?: { welcomeGreeting?: string; statusCallbackUrl?: string }): string;
 }
 
 export interface PhoneConfig {
   accountSid: string;
   authToken: string;
   phoneNumber: string;
+  voice?: string;  // TTS voice for ConversationRelay
 }
 
 /**

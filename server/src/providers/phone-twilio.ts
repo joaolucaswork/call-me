@@ -1,12 +1,9 @@
 /**
- * Twilio Phone Provider
+ * Twilio Phone Provider (ConversationRelay)
  *
- * Uses Twilio Programmable Voice API with Media Streams.
- *
- * Pricing (as of 2025):
- * - Outbound: ~$0.014/min
- * - Inbound: ~$0.0085/min
- * - Phone number: ~$1.15/month
+ * Uses Twilio ConversationRelay for text-based WebSocket communication.
+ * Twilio handles STT (Deepgram) and TTS (ElevenLabs) server-side.
+ * Our server only sends/receives JSON text messages.
  */
 
 import type { PhoneProvider, PhoneConfig } from './types.js';
@@ -16,18 +13,19 @@ interface TwilioCallResponse {
   status: string;
 }
 
-// Re-export for use in phone-call.ts
 export type { TwilioCallResponse };
 
 export class TwilioPhoneProvider implements PhoneProvider {
   readonly name = 'twilio';
   private accountSid: string | null = null;
   private authToken: string | null = null;
+  private voice: string | null = null;
 
   initialize(config: PhoneConfig): void {
     this.accountSid = config.accountSid;
     this.authToken = config.authToken;
-    console.error(`Phone provider: Twilio`);
+    this.voice = config.voice || null;
+    console.error(`Phone provider: Twilio (ConversationRelay)`);
   }
 
   async initiateCall(to: string, from: string, webhookUrl: string): Promise<string> {
@@ -71,26 +69,14 @@ export class TwilioPhoneProvider implements PhoneProvider {
     return data.sid;
   }
 
-  /**
-   * Answer an incoming call - Twilio handles this via TwiML, no-op here
-   */
   async answerCall(_callSid: string): Promise<void> {
     // Twilio answers via TwiML response in the webhook handler
   }
 
-  /**
-   * Start media streaming for Twilio.
-   * Note: For Twilio, streaming is started via TwiML response in the webhook,
-   * not via a separate API call. This method is a no-op for Twilio.
-   */
   async startStreaming(_callControlId: string, _streamUrl: string): Promise<void> {
-    // Twilio starts streaming via TwiML response in getStreamConnectXml
-    // This is a no-op for Twilio
+    // ConversationRelay starts via TwiML — no-op
   }
 
-  /**
-   * Hang up a call using Twilio REST API
-   */
   async hangup(callSid: string): Promise<void> {
     if (!this.accountSid || !this.authToken) {
       throw new Error('Twilio not initialized');
@@ -106,9 +92,7 @@ export class TwilioPhoneProvider implements PhoneProvider {
           'Authorization': `Basic ${auth}`,
           'Content-Type': 'application/x-www-form-urlencoded',
         },
-        body: new URLSearchParams({
-          Status: 'completed',
-        }).toString(),
+        body: new URLSearchParams({ Status: 'completed' }).toString(),
       }
     );
 
@@ -118,20 +102,24 @@ export class TwilioPhoneProvider implements PhoneProvider {
     }
   }
 
-  /**
-   * Get TwiML response for connecting media stream
-   * This is called when Twilio requests the webhook URL after call is answered
-   */
-  getStreamConnectXml(streamUrl: string, statusCallbackUrl?: string): string {
-    // Using <Connect><Stream> for bidirectional audio
-    // <Start><Stream> is unidirectional (receive-only) - cannot send audio back
-    // <Connect><Stream> allows both sending and receiving audio via WebSocket
-    const statusAttr = statusCallbackUrl ? ` statusCallback="${statusCallbackUrl}" statusCallbackMethod="POST"` : '';
+  getConnectXml(wsUrl: string, options?: { welcomeGreeting?: string; statusCallbackUrl?: string }): string {
+    const voice = this.voice || 'onwK4e9ZLuTAKqWW03F9';
+    const greeting = options?.welcomeGreeting
+      ? ` welcomeGreeting="${this.escapeXml(options.welcomeGreeting)}"`
+      : '';
+    const statusAttr = options?.statusCallbackUrl
+      ? ` statusCallback="${options.statusCallbackUrl}" statusCallbackMethod="POST"`
+      : '';
+
     return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Connect>
-    <Stream url="${streamUrl}"${statusAttr} />
+  <Connect${statusAttr}>
+    <ConversationRelay url="${wsUrl}" ttsProvider="ElevenLabs" voice="${voice}" language="pt-BR" transcriptionProvider="Deepgram" dtmfDetection="true" interruptible="true"${greeting} />
   </Connect>
 </Response>`;
+  }
+
+  private escapeXml(s: string): string {
+    return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }
 }
