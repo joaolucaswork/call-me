@@ -16,10 +16,13 @@ import { findMostRecentProject, formatProjectSummary } from './project-scanner.j
 import {
   handleWebhook as handleWhatsAppWebhook,
   sendText as whatsappSendText,
+  sendLongText as whatsappSendLongText,
   sendImage as whatsappSendImage,
   sendAudio as whatsappSendAudio,
   sendDocument as whatsappSendDocument,
   getMessages as whatsappGetMessages,
+  getSession as whatsappGetSession,
+  cleanupIdleSessions,
   isWhatsAppConfigured,
   onNewMessage,
 } from './whatsapp.js';
@@ -210,7 +213,7 @@ async function main() {
 
           // WhatsApp API routes
           case '/api/whatsapp/send_text':
-            result = await whatsappSendText(data.to, data.message);
+            result = await whatsappSendLongText(data.to, data.message);
             break;
           case '/api/whatsapp/send_image':
             result = await whatsappSendImage(data.to, data.image_url, data.caption);
@@ -223,6 +226,9 @@ async function main() {
             break;
           case '/api/whatsapp/read_messages':
             result = { messages: await whatsappGetMessages(data.limit, data.since_timestamp) };
+            break;
+          case '/api/whatsapp/get_session':
+            result = { session: whatsappGetSession(data.peer_id) };
             break;
           default:
             res.writeHead(404);

@@ -5,7 +5,7 @@
  * Supports sending/receiving text, audio, and images.
  */
 
-import { writeFileSync, mkdirSync, existsSync } from 'fs';
+import { writeFileSync, readFileSync, mkdirSync, existsSync, readdirSync, unlinkSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -17,8 +17,15 @@ const KAPSO_PHONE_NUMBER_ID = process.env.CALLME_KAPSO_PHONE_NUMBER_ID || '';
 const KAPSO_API_URL = 'https://api.kapso.ai/meta/whatsapp/v24.0';
 const KAPSO_PLATFORM_URL = 'https://api.kapso.ai/platform/v1';
 
-// Where to store downloaded media
+// Where to store downloaded media and sessions
 const MEDIA_DIR = join(__dirname, '..', '.media');
+const SESSIONS_DIR = join(__dirname, '..', '.whatsapp-sessions');
+
+// WhatsApp message length limit
+const MAX_MESSAGE_LENGTH = 4000;
+
+// Idle timeout for sessions (2 hours)
+const SESSION_IDLE_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 
 export interface WhatsAppMessage {
   id: string;
@@ -109,6 +116,8 @@ export async function sendText(to: string, body: string): Promise<{ success: boo
     if (!res.ok) {
       return { success: false, error: data.error?.message || JSON.stringify(data) };
     }
+    // Persist outbound to session
+    addToSessionHistory(formatPhone(to), 'assistant', body);
     return { success: true, messageId: data.messages?.[0]?.id };
   } catch (err: any) {
     return { success: false, error: err.message };
@@ -368,6 +377,10 @@ async function ingestMessage(raw: any): Promise<void> {
     receivedMessages.length = MAX_STORED_MESSAGES;
   }
 
+  // Persist to session history
+  const content = msg.text || msg.transcript || msg.caption || `(${msg.type})`;
+  addToSessionHistory(msg.from, 'user', content);
+
   console.error(`[WhatsApp] Received ${msg.type} from ${msg.from}: ${msg.text || msg.caption || '(media)'}`);
   notifyNewMessage(msg);
 }
@@ -451,6 +464,149 @@ function mimeTypeToExt(mime: string): string {
     'text/plain': 'txt',
   };
   return map[mime] || 'bin';
+}
+
+// ─── Session persistence (inspired by OpenClaw) ───
+
+interface WhatsAppSession {
+  peerId: string;           // Normalized phone number
+  createdAt: number;
+  updatedAt: number;
+  messageCount: number;
+  history: Array<{ role: 'user' | 'assistant'; text: string; timestamp: number }>;
+}
+
+function sessionPath(peerId: string): string {
+  const normalized = peerId.replace(/\D/g, '');
+  return join(SESSIONS_DIR, `${normalized}.json`);
+}
+
+export function getSession(peerId: string): WhatsAppSession | null {
+  const path = sessionPath(peerId);
+  if (!existsSync(path)) return null;
+  try {
+    return JSON.parse(readFileSync(path, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+export function saveSession(session: WhatsAppSession): void {
+  if (!existsSync(SESSIONS_DIR)) mkdirSync(SESSIONS_DIR, { recursive: true });
+  writeFileSync(sessionPath(session.peerId), JSON.stringify(session, null, 2));
+}
+
+export function getOrCreateSession(peerId: string): WhatsAppSession {
+  const existing = getSession(peerId);
+  if (existing) {
+    existing.updatedAt = Date.now();
+    return existing;
+  }
+  return {
+    peerId,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    messageCount: 0,
+    history: [],
+  };
+}
+
+export function addToSessionHistory(peerId: string, role: 'user' | 'assistant', text: string): void {
+  const session = getOrCreateSession(peerId);
+  session.history.push({ role, text, timestamp: Date.now() });
+  session.messageCount++;
+  session.updatedAt = Date.now();
+  // Keep last 50 messages in history
+  if (session.history.length > 50) {
+    session.history = session.history.slice(-50);
+  }
+  saveSession(session);
+}
+
+/**
+ * Clean up sessions that have been idle for too long
+ */
+export function cleanupIdleSessions(): number {
+  if (!existsSync(SESSIONS_DIR)) return 0;
+  const now = Date.now();
+  let cleaned = 0;
+  for (const file of readdirSync(SESSIONS_DIR)) {
+    if (!file.endsWith('.json')) continue;
+    try {
+      const path = join(SESSIONS_DIR, file);
+      const session: WhatsAppSession = JSON.parse(readFileSync(path, 'utf8'));
+      if (now - session.updatedAt > SESSION_IDLE_TIMEOUT_MS) {
+        unlinkSync(path);
+        cleaned++;
+        console.error(`[WhatsApp] Cleaned idle session: ${session.peerId}`);
+      }
+    } catch {}
+  }
+  return cleaned;
+}
+
+// Run cleanup every 30 minutes
+setInterval(cleanupIdleSessions, 30 * 60 * 1000);
+
+// ─── Message chunking ───
+
+/**
+ * Split long messages into WhatsApp-safe chunks (max 4000 chars).
+ * Tries to split at newlines or sentence boundaries.
+ */
+export function chunkMessage(text: string): string[] {
+  if (text.length <= MAX_MESSAGE_LENGTH) return [text];
+
+  const chunks: string[] = [];
+  let remaining = text;
+
+  while (remaining.length > 0) {
+    if (remaining.length <= MAX_MESSAGE_LENGTH) {
+      chunks.push(remaining);
+      break;
+    }
+
+    // Try to split at last newline within limit
+    let splitAt = remaining.lastIndexOf('\n', MAX_MESSAGE_LENGTH);
+    if (splitAt < MAX_MESSAGE_LENGTH * 0.5) {
+      // Try sentence boundary
+      splitAt = remaining.lastIndexOf('. ', MAX_MESSAGE_LENGTH);
+      if (splitAt < MAX_MESSAGE_LENGTH * 0.5) {
+        // Try space
+        splitAt = remaining.lastIndexOf(' ', MAX_MESSAGE_LENGTH);
+        if (splitAt < MAX_MESSAGE_LENGTH * 0.5) {
+          // Hard split
+          splitAt = MAX_MESSAGE_LENGTH;
+        }
+      }
+      if (splitAt > 0) splitAt++; // Include the delimiter
+    }
+
+    chunks.push(remaining.slice(0, splitAt));
+    remaining = remaining.slice(splitAt);
+  }
+
+  return chunks;
+}
+
+/**
+ * Send a long text message, auto-chunking if needed
+ */
+export async function sendLongText(to: string, body: string): Promise<{ success: boolean; messageIds: string[]; error?: string }> {
+  const chunks = chunkMessage(body);
+  const messageIds: string[] = [];
+
+  for (const chunk of chunks) {
+    const result = await sendText(to, chunk);
+    if (!result.success) {
+      return { success: false, messageIds, error: result.error };
+    }
+    if (result.messageId) messageIds.push(result.messageId);
+    // Small delay between chunks to maintain order
+    if (chunks.length > 1) await new Promise(r => setTimeout(r, 500));
+  }
+
+  return { success: true, messageIds };
 }
 
 export function isWhatsAppConfigured(): boolean {
