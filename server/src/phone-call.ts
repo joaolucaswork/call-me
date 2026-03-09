@@ -13,7 +13,6 @@ import {
 } from './providers/index.js';
 import {
   validateTwilioSignature,
-  validateTelnyxSignature,
   generateWebSocketToken,
   validateWebSocketToken,
 } from './webhook-security.js';
@@ -24,7 +23,7 @@ interface CallState {
   userPhoneNumber: string;
   ws: WebSocket | null;
   streamSid: string | null;  // Twilio media stream ID (required for sending audio)
-  streamingReady: boolean;  // True when streaming.started event received (Telnyx)
+  streamingReady: boolean;  // Reserved for future use
   wsToken: string;  // Security token for WebSocket authentication
   conversationHistory: Array<{ speaker: 'claude' | 'user'; message: string }>;
   startTime: number;
@@ -101,7 +100,7 @@ export function loadServerConfig(publicUrl: string): ServerConfig {
     "Olá, aqui é o Claude. Como posso ajudar?";
 
   // Hold/keepalive interval (default 15 seconds, 0 to disable)
-  const holdIntervalMs = parseInt(process.env.LEIN_HOLD_INTERVAL_MS || '15000', 10);
+  const holdIntervalMs = parseInt(process.env.LEIN_HOLD_INTERVAL_MS || '60000', 10);
 
   const holdMessages = [
     "Ainda estou trabalhando nisso, um momento...",
@@ -253,6 +252,50 @@ export class CallManager {
   /**
    * Get call status and history (works for both active and hung-up calls).
    */
+  /**
+   * Find an active call by the caller's phone number.
+   * Normalizes both numbers (strips + and non-digits) before comparing.
+   */
+  getActiveCallByPhone(phone: string): { callId: string; state: CallState } | null {
+    const normalized = phone.replace(/\D/g, '');
+    for (const [callId, state] of this.activeCalls) {
+      const callPhone = state.userPhoneNumber.replace(/\D/g, '');
+      if (callPhone === normalized || callPhone.endsWith(normalized) || normalized.endsWith(callPhone)) {
+        return { callId, state };
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Notify the active call that a WhatsApp message was received.
+   * Plays a short TTS message on the call to alert the user.
+   */
+  async notifyWhatsAppMessage(callId: string, messageText: string): Promise<void> {
+    const state = this.activeCalls.get(callId);
+    if (!state || state.hungUp) return;
+
+    const preview = messageText.length > 100 ? messageText.slice(0, 100) + '...' : messageText;
+    const notification = `Recebi sua mensagem no WhatsApp: ${preview}`;
+
+    try {
+      this.stopKeepalive(state);
+      const audioData = await this.generateTTSAudio(notification);
+      await this.sendPreGeneratedAudio(state, audioData);
+      state.conversationHistory.push({ speaker: 'claude', message: `[WhatsApp notification] ${notification}` });
+      this.startKeepalive(state);
+    } catch (err) {
+      console.error(`[${callId}] Failed to notify WhatsApp message:`, err);
+    }
+  }
+
+  /**
+   * Check if there are any active (non-hung-up) calls.
+   */
+  hasActiveCalls(): boolean {
+    return this.activeCalls.size > 0;
+  }
+
   getCallStatus(callId: string): { status: 'active' | 'hung_up' | 'not_found'; conversationHistory?: Array<{ speaker: string; message: string }>; durationSeconds?: number } {
     const active = this.activeCalls.get(callId);
     if (active) {
@@ -458,39 +501,6 @@ export class CallManager {
   private handlePhoneWebhook(req: IncomingMessage, res: ServerResponse): void {
     const contentType = req.headers['content-type'] || '';
 
-    // Telnyx sends JSON webhooks
-    if (contentType.includes('application/json')) {
-      let body = '';
-      req.on('data', (chunk) => { body += chunk; });
-      req.on('end', async () => {
-        try {
-          // Validate Telnyx signature if public key is configured
-          const telnyxPublicKey = this.config.providerConfig.telnyxPublicKey;
-          if (telnyxPublicKey) {
-            const signature = req.headers['telnyx-signature-ed25519'] as string | undefined;
-            const timestamp = req.headers['telnyx-timestamp'] as string | undefined;
-
-            if (!validateTelnyxSignature(telnyxPublicKey, signature, timestamp, body)) {
-              console.error('[Security] Rejecting Telnyx webhook: invalid signature');
-              res.writeHead(401);
-              res.end('Invalid signature');
-              return;
-            }
-          } else {
-            console.error('[Security] Warning: LEIN_TELNYX_PUBLIC_KEY not set, skipping signature verification');
-          }
-
-          const event = JSON.parse(body);
-          await this.handleTelnyxWebhook(event, res);
-        } catch (error) {
-          console.error('Error parsing webhook:', error);
-          res.writeHead(400);
-          res.end('Invalid JSON');
-        }
-      });
-      return;
-    }
-
     // Twilio sends form-urlencoded webhooks
     if (contentType.includes('application/x-www-form-urlencoded')) {
       let body = '';
@@ -648,153 +658,6 @@ export class CallManager {
       res.writeHead(200);
       res.end();
     });
-  }
-
-  private async handleTelnyxWebhook(event: any, res: ServerResponse): Promise<void> {
-    const eventType = event.data?.event_type;
-    const callControlId = event.data?.payload?.call_control_id;
-
-    console.error(`Phone webhook: ${eventType}`);
-
-    // Always respond 200 OK immediately
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ status: 'ok' }));
-
-    if (!callControlId) return;
-
-    try {
-      switch (eventType) {
-        case 'call.initiated':
-          // Check if this is an inbound call
-          const direction = event.data?.payload?.direction;
-          if (direction === 'incoming') {
-            this.handleInboundCall(event.data.payload).catch(err => {
-              console.error('[Inbound] Failed to handle inbound call:', err);
-            });
-          }
-          break;
-
-        case 'call.answered':
-          // Include security token in the stream URL
-          let streamUrl = `wss://${new URL(this.config.publicUrl).host}/media-stream`;
-          const callId = this.callControlIdToCallId.get(callControlId);
-          if (callId) {
-            const state = this.activeCalls.get(callId);
-            if (state) {
-              streamUrl += `?token=${encodeURIComponent(state.wsToken)}`;
-            }
-          }
-          await this.config.providers.phone.startStreaming(callControlId, streamUrl);
-          console.error(`Started streaming for call ${callControlId}`);
-          break;
-
-        case 'call.hangup':
-          const hangupCallId = this.callControlIdToCallId.get(callControlId);
-          if (hangupCallId) {
-            this.preserveHungUpCall(hangupCallId);
-          }
-          break;
-
-        case 'call.machine.detection.ended':
-          const result = event.data?.payload?.result;
-          console.error(`AMD result: ${result}`);
-          break;
-
-        case 'streaming.started':
-          const streamCallId = this.callControlIdToCallId.get(callControlId);
-          if (streamCallId) {
-            const streamState = this.activeCalls.get(streamCallId);
-            if (streamState) {
-              streamState.streamingReady = true;
-              console.error(`[${streamCallId}] Streaming ready`);
-            }
-          }
-          break;
-
-        case 'streaming.stopped':
-          break;
-      }
-    } catch (error) {
-      console.error(`Error handling webhook ${eventType}:`, error);
-    }
-  }
-
-  /**
-   * Handle an incoming Telnyx call - answer, greet, listen, then notify
-   */
-  private async handleInboundCall(payload: any): Promise<void> {
-    const callControlId = payload.call_control_id;
-    const from = payload.from;
-
-    console.error(`[Inbound] Incoming call from ${from}, callControlId: ${callControlId}`);
-
-    const callId = `inbound-${++this.currentCallId}-${Date.now()}`;
-    const sttSession = this.config.providers.stt.createSession();
-    await sttSession.connect();
-
-    const wsToken = generateWebSocketToken();
-
-    const state: CallState = {
-      callId,
-      callControlId,
-      userPhoneNumber: from,
-      ws: null,
-      streamSid: null,
-      streamingReady: false,
-      wsToken,
-      conversationHistory: [],
-      startTime: Date.now(),
-      hungUp: false,
-      sttSession,
-      isInbound: true,
-    };
-
-    this.activeCalls.set(callId, state);
-    this.callControlIdToCallId.set(callControlId, callId);
-    this.wsTokenToCallId.set(wsToken, callId);
-
-    try {
-      await this.config.providers.phone.answerCall(callControlId);
-      await this.waitForConnection(callId, 15000);
-
-      if (state.hungUp) {
-        this.cleanupCall(callId);
-        return;
-      }
-
-      // Play greeting
-      const audioData = await this.generateTTSAudio(this.getGreeting());
-      await this.sendPreGeneratedAudio(state, audioData);
-
-      if (state.hungUp) {
-        this.cleanupCall(callId);
-        return;
-      }
-
-      // Listen for user's response
-      const transcript = await this.listenWithTimeout(state, 30000);
-      state.conversationHistory.push({ speaker: 'claude', message: this.getGreeting() });
-      state.conversationHistory.push({ speaker: 'user', message: transcript });
-
-      console.error(`[${callId}] User said: ${transcript}`);
-
-      // Write pending call info for hooks to detect
-      this.writePendingInboundCall(callId, from, transcript);
-
-      // Notify via handler callback
-      this.onInboundCall?.(callId, from, transcript);
-
-      // Play hold message and start keepalive
-      const holdMessage = "Um momento, por favor. Estou conectando voce ao Claude.";
-      const holdAudio = await this.generateTTSAudio(holdMessage);
-      await this.sendPreGeneratedAudio(state, holdAudio);
-
-      // Start keepalive so user hears periodic updates while waiting
-      this.startKeepalive(state);
-    } catch (error) {
-      console.error(`[${callId}] Inbound call error:`, error instanceof Error ? error.message : error);
-      try { await this.hangUpCall(callId); } catch {}
-    }
   }
 
   /**
@@ -1116,10 +979,9 @@ export class CallManager {
     while (Date.now() - startTime < timeout) {
       const state = this.activeCalls.get(callId);
       // Wait for WebSocket AND streaming to be ready:
-      // - Twilio: streamSid is set from "start" WebSocket event
-      // - Telnyx: streamingReady is set from "streaming.started" webhook
+      // Twilio: streamSid is set from "start" WebSocket event
       const wsReady = state?.ws && state.ws.readyState === WebSocket.OPEN;
-      const streamReady = state?.streamSid || state?.streamingReady;
+      const streamReady = state?.streamSid;
       if (wsReady && streamReady) {
         return;
       }

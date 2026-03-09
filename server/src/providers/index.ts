@@ -2,11 +2,10 @@
  * Provider Factory
  *
  * Creates and configures providers based on environment variables.
- * Supports Telnyx or Twilio for phone, OpenAI for TTS and Realtime STT.
+ * Uses Twilio for phone, OpenAI or ElevenLabs for TTS, OpenAI for STT.
  */
 
 import type { PhoneProvider, TTSProvider, RealtimeSTTProvider, ProviderRegistry } from './types.js';
-import { TelnyxPhoneProvider } from './phone-telnyx.js';
 import { TwilioPhoneProvider } from './phone-twilio.js';
 import { OpenAITTSProvider } from './tts-openai.js';
 import { ElevenLabsTTSProvider } from './tts-elevenlabs.js';
@@ -14,23 +13,13 @@ import { OpenAIRealtimeSTTProvider } from './stt-openai-realtime.js';
 
 export * from './types.js';
 
-export type PhoneProviderType = 'telnyx' | 'twilio';
 export type TTSProviderType = 'openai' | 'elevenlabs';
 
 export interface ProviderConfig {
-  // Phone provider selection
-  phoneProvider: PhoneProviderType;
-
-  // Phone credentials (interpretation depends on provider)
-  // Telnyx: accountSid = Connection ID, authToken = API Key
-  // Twilio: accountSid = Account SID, authToken = Auth Token
+  // Twilio credentials
   phoneAccountSid: string;
   phoneAuthToken: string;
   phoneNumber: string;
-
-  // Telnyx webhook public key (for signature verification)
-  // Get from: Mission Control > Account Settings > Keys & Credentials > Public Key
-  telnyxPublicKey?: string;
 
   // TTS provider selection
   ttsProvider: TTSProviderType;
@@ -60,9 +49,6 @@ export function loadProviderConfig(): ProviderConfig {
     ? parseFloat(process.env.LEIN_STT_VAD_THRESHOLD)
     : undefined;
 
-  // Default to telnyx if not specified
-  const phoneProvider = (process.env.LEIN_PHONE_PROVIDER || 'telnyx') as PhoneProviderType;
-
   // Default to openai for TTS if not specified
   const ttsProvider = (process.env.LEIN_TTS_PROVIDER || 'openai') as TTSProviderType;
 
@@ -70,11 +56,9 @@ export function loadProviderConfig(): ProviderConfig {
   const defaultVoice = ttsProvider === 'elevenlabs' ? 'onwK4e9ZLuTAKqWW03F9' : 'onyx';
 
   return {
-    phoneProvider,
     phoneAccountSid: process.env.LEIN_PHONE_ACCOUNT_SID || '',
     phoneAuthToken: process.env.LEIN_PHONE_AUTH_TOKEN || '',
     phoneNumber: process.env.LEIN_PHONE_NUMBER || '',
-    telnyxPublicKey: process.env.LEIN_TELNYX_PUBLIC_KEY,
     ttsProvider,
     openaiApiKey: process.env.LEIN_OPENAI_API_KEY || '',
     elevenlabsApiKey: process.env.LEIN_ELEVENLABS_API_KEY,
@@ -87,20 +71,12 @@ export function loadProviderConfig(): ProviderConfig {
 }
 
 export function createPhoneProvider(config: ProviderConfig): PhoneProvider {
-  let provider: PhoneProvider;
-
-  if (config.phoneProvider === 'twilio') {
-    provider = new TwilioPhoneProvider();
-  } else {
-    provider = new TelnyxPhoneProvider();
-  }
-
+  const provider = new TwilioPhoneProvider();
   provider.initialize({
     accountSid: config.phoneAccountSid,
     authToken: config.phoneAuthToken,
     phoneNumber: config.phoneNumber,
   });
-
   return provider;
 }
 
@@ -149,16 +125,11 @@ export function createProviders(config: ProviderConfig): ProviderRegistry {
 export function validateProviderConfig(config: ProviderConfig): string[] {
   const errors: string[] = [];
 
-  // Provider-specific credential descriptions
-  const credentialDesc = config.phoneProvider === 'twilio'
-    ? { accountSid: 'Twilio Account SID', authToken: 'Twilio Auth Token' }
-    : { accountSid: 'Telnyx Connection ID', authToken: 'Telnyx API Key' };
-
   if (!config.phoneAccountSid) {
-    errors.push(`Missing LEIN_PHONE_ACCOUNT_SID (${credentialDesc.accountSid})`);
+    errors.push('Missing LEIN_PHONE_ACCOUNT_SID (Twilio Account SID)');
   }
   if (!config.phoneAuthToken) {
-    errors.push(`Missing LEIN_PHONE_AUTH_TOKEN (${credentialDesc.authToken})`);
+    errors.push('Missing LEIN_PHONE_AUTH_TOKEN (Twilio Auth Token)');
   }
   if (!config.phoneNumber) {
     errors.push('Missing LEIN_PHONE_NUMBER');

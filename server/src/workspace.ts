@@ -14,6 +14,9 @@ export const MEMORY_FILE = join(WORKSPACE_DIR, 'MEMORY.md');
 export const MEMORY_DIR = join(WORKSPACE_DIR, 'memory');
 export const SESSIONS_DIR = join(WORKSPACE_DIR, 'sessions');
 export const MEDIA_DIR = join(WORKSPACE_DIR, '.media');
+export const SENTINEL_DIR = join(WORKSPACE_DIR, '.sentinel');
+export const SENTINEL_PENDING_DIR = join(SENTINEL_DIR, 'pending');
+export const SENTINEL_PROCESSED_DIR = join(SENTINEL_DIR, 'processed');
 
 export function ensureWorkspace(): void {
   for (const dir of [WORKSPACE_DIR, MEMORY_DIR, SESSIONS_DIR, MEDIA_DIR]) {

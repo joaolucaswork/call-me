@@ -32,7 +32,7 @@ module.exports = {
       name: 'lein',
       script: 'src/http-server.ts',
       interpreter: '/Users/lucas/.bun/bin/bun',
-      cwd: '/Users/lucas/Documents/GitHub/call-me/server',
+      cwd: '/Users/lucas/Documents/GitHub/lein/server',
       watch: ['src'],
       ignore_watch: ['node_modules'],
       autorestart: true,

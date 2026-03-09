@@ -26,6 +26,7 @@ import {
   cleanupIdleSessions,
   isWhatsAppConfigured,
   onNewMessage,
+  parseMessagePrefix,
 } from './whatsapp.js';
 
 // Store call manager globally for API access
@@ -33,6 +34,34 @@ let callManager: CallManager | null = null;
 
 // Track connected MCP sessions
 let connectedSessions = 0;
+
+// Pending WhatsApp messages per active call — drained when Claude's call session makes any API call
+interface PendingWhatsAppMsg {
+  from: string;
+  text: string;
+  type: string;
+  mediaLocalPath?: string;
+  mimeType?: string;
+  timestamp: number;
+}
+const pendingWhatsAppByCall = new Map<string, PendingWhatsAppMsg[]>();
+
+function enqueuePendingWhatsApp(callId: string, msg: PendingWhatsAppMsg): void {
+  if (!pendingWhatsAppByCall.has(callId)) {
+    pendingWhatsAppByCall.set(callId, []);
+  }
+  pendingWhatsAppByCall.get(callId)!.push(msg);
+  console.error(`[Lein] Enqueued WhatsApp message for call ${callId} (${pendingWhatsAppByCall.get(callId)!.length} pending)`);
+}
+
+function drainPendingWhatsApp(callId: string): PendingWhatsAppMsg[] {
+  const msgs = pendingWhatsAppByCall.get(callId) || [];
+  if (msgs.length > 0) {
+    pendingWhatsAppByCall.delete(callId);
+    console.error(`[Lein] Drained ${msgs.length} pending WhatsApp message(s) for call ${callId}`);
+  }
+  return msgs;
+}
 
 async function main() {
   // Initialize workspace directory structure
@@ -122,7 +151,63 @@ async function main() {
   });
 
   // Auto-spawn Claude when WhatsApp message arrives with no MCP sessions
-  onNewMessage((msg) => {
+  // Routes messages to active calls when appropriate
+  onNewMessage(async (msg) => {
+    const messageText = msg.text || msg.transcript || msg.caption || '(media)';
+
+    // Parse prefix commands
+    const parsed = parseMessagePrefix(messageText);
+
+    // If /nova prefix: always spawn new session regardless of active calls
+    if (parsed.prefix === 'nova') {
+      console.error(`[Lein] WhatsApp /nova from ${msg.from} — forcing new session`);
+      // Override message text with clean (prefix-stripped) version
+      msg.text = parsed.cleanMessage || messageText;
+      if (connectedSessions === 0) {
+        spawnClaudeForWhatsApp(msg);
+      }
+      // If MCP connected, it'll be read via read_whatsapp
+      return;
+    }
+
+    // If /s:<name> prefix: route to named session (future — for now treat as default)
+    if (parsed.prefix === 'session') {
+      console.error(`[Lein] WhatsApp /s:${parsed.sessionName} from ${msg.from} — session routing (not yet implemented)`);
+      msg.text = parsed.cleanMessage || messageText;
+    }
+
+    // Check if there's an active call with the same user
+    // Try matching by WhatsApp number AND by call number (user may have different numbers)
+    if (callManager) {
+      const userCallNumber = process.env.LEIN_USER_PHONE_NUMBER || '';
+      const userWhatsAppNumber = process.env.LEIN_USER_WHATSAPP_NUMBER || '';
+      const activeCall = callManager.getActiveCallByPhone(msg.from)
+        || (userWhatsAppNumber && msg.from.replace(/\D/g, '').includes(userWhatsAppNumber.replace(/\D/g, ''))
+            ? callManager.getActiveCallByPhone(userCallNumber)
+            : null);
+      if (activeCall) {
+        console.error(`[Lein] WhatsApp from ${msg.from} routed to active call ${activeCall.callId}`);
+        // Enqueue for piggyback delivery on next call API response
+        enqueuePendingWhatsApp(activeCall.callId, {
+          from: msg.from,
+          text: messageText,
+          type: msg.type,
+          mediaLocalPath: msg.mediaLocalPath,
+          mimeType: msg.mimeType,
+          timestamp: msg.timestamp || Date.now(),
+        });
+        // Also notify on the call via TTS so user knows a message arrived
+        try {
+          await callManager.notifyWhatsAppMessage(activeCall.callId, messageText);
+        } catch (err) {
+          console.error(`[Lein] Failed to notify call about WhatsApp:`, err);
+        }
+        // Don't spawn a new session — message will be delivered via piggyback
+        return;
+      }
+    }
+
+    // No active call — default behavior
     if (connectedSessions === 0) {
       console.error(`[Lein] WhatsApp from ${msg.from} — auto-spawning Claude session`);
       const spawned = spawnClaudeForWhatsApp(msg);
@@ -192,6 +277,18 @@ async function main() {
 
         let result: unknown;
 
+        // Helper: attach pending WhatsApp messages to call API responses
+        const attachPendingWhatsApp = (callId: string, res: any): any => {
+          const pending = drainPendingWhatsApp(callId);
+          if (pending.length === 0) return res;
+          const base = typeof res === 'object' && res !== null ? res : { response: res };
+          return {
+            ...base,
+            pendingWhatsApp: pending,
+            _whatsappNotice: `IMPORTANT: ${pending.length} WhatsApp message(s) arrived during this call. Read them above and respond to the user about their WhatsApp message(s) using continue_call or send_whatsapp.`,
+          };
+        };
+
         switch (url.pathname) {
           case '/api/initiate_call':
             result = await callManager!.initiateCall(data.message);
@@ -200,12 +297,14 @@ async function main() {
             const continueResult = await callManager!.continueCall(data.call_id, data.message);
             // If hung up, returns object with context; otherwise returns string response
             result = typeof continueResult === 'string' ? { response: continueResult } : continueResult;
+            result = attachPendingWhatsApp(data.call_id, result);
             break;
           }
           case '/api/speak_to_user': {
             const speakResult = await callManager!.speakOnly(data.call_id, data.message);
             // If hung up, returns object with context; otherwise returns void
             result = speakResult || { success: true };
+            result = attachPendingWhatsApp(data.call_id, result);
             break;
           }
           case '/api/end_call':
@@ -213,6 +312,7 @@ async function main() {
             break;
           case '/api/get_call_status':
             result = callManager!.getCallStatus(data.call_id);
+            result = attachPendingWhatsApp(data.call_id, result);
             break;
 
           // WhatsApp API routes

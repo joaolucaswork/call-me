@@ -78,6 +78,56 @@ function notifyNewMessage(msg: WhatsAppMessage) {
   }
 }
 
+// ─── Message prefix parsing ───
+
+export interface ParsedMessage {
+  prefix: 'nova' | 'session' | 'sessoes' | null;
+  sessionName: string | null;
+  cleanMessage: string;
+  originalMessage: string;
+}
+
+/**
+ * Parse WhatsApp message for command prefixes.
+ * Supported prefixes:
+ *   /nova or /new — force new session
+ *   /s:<name> or /sessão:<name> — route to named session
+ *   No prefix — route to active call if exists
+ */
+export function parseMessagePrefix(text: string): ParsedMessage {
+  const original = text;
+  const trimmed = text.trim();
+
+  // /nova or /new
+  const novaMatch = trimmed.match(/^\/(nova|new)\s*/i);
+  if (novaMatch) {
+    return {
+      prefix: 'nova',
+      sessionName: null,
+      cleanMessage: trimmed.slice(novaMatch[0].length).trim(),
+      originalMessage: original,
+    };
+  }
+
+  // /s:<name> or /sessão:<name> or /session:<name>
+  const sessionMatch = trimmed.match(/^\/(s|sess[aã]o|session):(\S+)\s*/i);
+  if (sessionMatch) {
+    return {
+      prefix: 'session',
+      sessionName: sessionMatch[2],
+      cleanMessage: trimmed.slice(sessionMatch[0].length).trim(),
+      originalMessage: original,
+    };
+  }
+
+  return {
+    prefix: null,
+    sessionName: null,
+    cleanMessage: text,
+    originalMessage: original,
+  };
+}
+
 // ─── Kapso API helpers ───
 
 async function kapsoFetch(path: string, options: RequestInit = {}): Promise<Response> {
@@ -95,7 +145,7 @@ async function kapsoFetch(path: string, options: RequestInit = {}): Promise<Resp
 // ─── Send messages ───
 
 export async function sendText(to: string, body: string): Promise<{ success: boolean; messageId?: string; error?: string }> {
-  to = to || process.env.LEIN_USER_PHONE_NUMBER || '';
+  to = to || process.env.LEIN_USER_WHATSAPP_NUMBER || process.env.LEIN_USER_PHONE_NUMBER || '';
   if (!to) return { success: false, error: 'No recipient phone number' };
   try {
     const res = await kapsoFetch('/messages', {
@@ -122,7 +172,7 @@ export async function sendText(to: string, body: string): Promise<{ success: boo
 }
 
 export async function sendImage(to: string, imageUrl: string, caption?: string): Promise<{ success: boolean; messageId?: string; error?: string }> {
-  to = to || process.env.LEIN_USER_PHONE_NUMBER || '';
+  to = to || process.env.LEIN_USER_WHATSAPP_NUMBER || process.env.LEIN_USER_PHONE_NUMBER || '';
   if (!to) return { success: false, error: 'No recipient phone number' };
   try {
     const res = await kapsoFetch('/messages', {
@@ -147,7 +197,7 @@ export async function sendImage(to: string, imageUrl: string, caption?: string):
 }
 
 export async function sendAudio(to: string, audioUrl: string): Promise<{ success: boolean; messageId?: string; error?: string }> {
-  to = to || process.env.LEIN_USER_PHONE_NUMBER || '';
+  to = to || process.env.LEIN_USER_WHATSAPP_NUMBER || process.env.LEIN_USER_PHONE_NUMBER || '';
   if (!to) return { success: false, error: 'No recipient phone number' };
   try {
     const res = await kapsoFetch('/messages', {
@@ -172,7 +222,7 @@ export async function sendAudio(to: string, audioUrl: string): Promise<{ success
 }
 
 export async function sendDocument(to: string, documentUrl: string, filename?: string, caption?: string): Promise<{ success: boolean; messageId?: string; error?: string }> {
-  to = to || process.env.LEIN_USER_PHONE_NUMBER || '';
+  to = to || process.env.LEIN_USER_WHATSAPP_NUMBER || process.env.LEIN_USER_PHONE_NUMBER || '';
   if (!to) return { success: false, error: 'No recipient phone number' };
   try {
     const res = await kapsoFetch('/messages', {

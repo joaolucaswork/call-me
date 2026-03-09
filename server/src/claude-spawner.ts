@@ -11,7 +11,7 @@ import { join } from 'path';
 import { homedir } from 'os';
 import { type InboundSession, claimSession } from './session-manager.js';
 import { listProjects, readMemory, WORKSPACE_DIR, ensureWorkspace } from './workspace.js';
-import type { WhatsAppMessage } from './whatsapp.js';
+import { type WhatsAppMessage, getSession } from './whatsapp.js';
 
 const CLAUDE_BIN = join(homedir(), '.local', 'bin', 'claude');
 
@@ -20,6 +20,7 @@ interface SpawnedSession {
   sessionId: string;
   source: 'call' | 'whatsapp';
   startedAt: number;
+  phone?: string;
 }
 
 // Track ALL active spawns (multi-session support)
@@ -82,6 +83,8 @@ export function spawnClaudeForCall(session: InboundSession): boolean {
     `5. Keep the call active and follow the caller's instructions`,
     `6. If the caller hangs up, wait for them to call back`,
     `7. Do NOT end the call unless explicitly asked to`,
+    `8. Use read_whatsapp periodically to check for WhatsApp messages — the user may send text/images via WhatsApp during the call`,
+    `9. If a WhatsApp notification plays on the call, immediately read_whatsapp to get the full message`,
   ].join('\n');
 
   return doSpawn(prompt, session.callId, 'call');
@@ -118,10 +121,10 @@ export function spawnClaudeForWhatsApp(msg: WhatsAppMessage): boolean {
     `9. Send status updates via WhatsApp every 2-3 minutes during long tasks`,
   ].join('\n');
 
-  return doSpawn(prompt, `whatsapp-${msg.id}`, 'whatsapp');
+  return doSpawn(prompt, `whatsapp-${msg.id}`, 'whatsapp', msg.from);
 }
 
-function doSpawn(prompt: string, sessionId: string, source: 'call' | 'whatsapp'): boolean {
+function doSpawn(prompt: string, sessionId: string, source: 'call' | 'whatsapp', phone?: string): boolean {
   console.error(`[Lein:Spawner] Spawning Claude session ${sessionId} in ${WORKSPACE_DIR}`);
 
   try {
