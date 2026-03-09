@@ -72,7 +72,73 @@ export function onNewMessage(cb: MessageCallback) {
   messageCallbacks.push(cb);
 }
 
+// Debounce: coalesce rapid text messages from same sender (2s window)
+const DEBOUNCE_MS = 2000;
+const debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const debouncedMessages = new Map<string, WhatsAppMessage[]>();
+// Deduplication: prevent duplicate webhook deliveries
+const recentMessageIds = new Set<string>();
+const DEDUP_TTL_MS = 60_000;
+
 function notifyNewMessage(msg: WhatsAppMessage) {
+  // Deduplication check
+  if (msg.id && recentMessageIds.has(msg.id)) {
+    console.error(`[WhatsApp] Duplicate message ${msg.id} — skipping`);
+    return;
+  }
+  if (msg.id) {
+    recentMessageIds.add(msg.id);
+    setTimeout(() => recentMessageIds.delete(msg.id), DEDUP_TTL_MS);
+  }
+
+  const key = msg.from;
+
+  // Media messages flush immediately (no debounce)
+  if (msg.type !== 'text') {
+    flushDebounced(key);
+    fireCallbacks(msg);
+    return;
+  }
+
+  // Text: accumulate and debounce
+  if (!debouncedMessages.has(key)) {
+    debouncedMessages.set(key, []);
+  }
+  debouncedMessages.get(key)!.push(msg);
+
+  // Reset timer
+  const existing = debounceTimers.get(key);
+  if (existing) clearTimeout(existing);
+
+  debounceTimers.set(key, setTimeout(() => {
+    flushDebounced(key);
+  }, DEBOUNCE_MS));
+}
+
+function flushDebounced(key: string) {
+  const timer = debounceTimers.get(key);
+  if (timer) clearTimeout(timer);
+  debounceTimers.delete(key);
+
+  const msgs = debouncedMessages.get(key);
+  debouncedMessages.delete(key);
+
+  if (!msgs || msgs.length === 0) return;
+
+  if (msgs.length === 1) {
+    fireCallbacks(msgs[0]);
+  } else {
+    // Coalesce multiple text messages into one
+    const combined: WhatsAppMessage = {
+      ...msgs[msgs.length - 1], // Use latest message as base
+      text: msgs.map(m => m.text || '').filter(Boolean).join('\n'),
+    };
+    console.error(`[WhatsApp] Coalesced ${msgs.length} messages from ${key}`);
+    fireCallbacks(combined);
+  }
+}
+
+function fireCallbacks(msg: WhatsAppMessage) {
   for (const cb of messageCallbacks) {
     try { cb(msg); } catch {}
   }
