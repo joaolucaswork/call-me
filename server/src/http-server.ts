@@ -11,7 +11,7 @@ import { CallManager, loadServerConfig } from './phone-call.js';
 import { startNgrok, stopNgrok } from './ngrok.js';
 import { createServer } from 'http';
 import { writeSession, completeSession, cleanupAllSessions, type InboundSession } from './session-manager.js';
-import { spawnClaudeForCall, spawnClaudeForWhatsApp, hasActiveSpawn, getActiveSessionCount } from './claude-spawner.js';
+import { spawnClaudeForCall, spawnClaudeForWhatsApp, hasActiveSpawn, getActiveSessionCount, resetSessionForPhone } from './claude-spawner.js';
 import { ensureWorkspace } from './workspace.js';
 import { findMostRecentProject, formatProjectSummary } from './project-scanner.js';
 import {
@@ -166,6 +166,7 @@ async function main() {
     // If /nova prefix: always spawn new session regardless of active calls
     if (parsed.prefix === 'nova') {
       console.error(`[Lein] WhatsApp /nova from ${msg.from} — forcing new session`);
+      resetSessionForPhone(msg.from); // Clear persistent session so a fresh one is created
       // Override message text with clean (prefix-stripped) version
       msg.text = parsed.cleanMessage || messageText;
       if (connectedSessions === 0 && getActiveSessionCount() === 0) {

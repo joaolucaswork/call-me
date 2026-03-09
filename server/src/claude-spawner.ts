@@ -7,6 +7,7 @@
  */
 
 import { spawn } from 'child_process';
+import { createHash } from 'crypto';
 import { join } from 'path';
 import { homedir } from 'os';
 import { type InboundSession, claimSession } from './session-manager.js';
@@ -22,6 +23,50 @@ interface SpawnedSession {
   source: 'call' | 'whatsapp';
   startedAt: number;
   phone?: string;
+  claudeSessionId?: string; // UUID used with --session-id / --resume
+}
+
+// Track persistent Claude session UUIDs per user phone number
+// Maps phone → { uuid, lastUsed } so we can resume sessions
+const persistentSessions = new Map<string, { uuid: string; lastUsed: number }>();
+
+// Sessions older than 2h get a fresh start
+const SESSION_TTL_MS = 2 * 60 * 60 * 1000;
+
+function getOrCreateSessionUuid(phone: string, forceNew = false): { uuid: string; isResume: boolean } {
+  const existing = persistentSessions.get(phone);
+
+  if (existing && !forceNew) {
+    const age = Date.now() - existing.lastUsed;
+    if (age < SESSION_TTL_MS) {
+      existing.lastUsed = Date.now();
+      return { uuid: existing.uuid, isResume: true };
+    }
+    // Session expired — create fresh
+    console.error(`[Lein:Spawner] Session for ${phone} expired (${Math.round(age / 60000)}min), creating new`);
+  }
+
+  // New session — use timestamp in hash to get unique UUID each time
+  const seed = forceNew || !existing
+    ? `lein-session:${phone}:${Date.now()}`
+    : `lein-session:${phone}`;
+  const hash = createHash('sha256').update(seed).digest('hex');
+  const uuid = [
+    hash.slice(0, 8),
+    hash.slice(8, 12),
+    '4' + hash.slice(13, 16),
+    '8' + hash.slice(17, 20),
+    hash.slice(20, 32),
+  ].join('-');
+  persistentSessions.set(phone, { uuid, lastUsed: Date.now() });
+  return { uuid, isResume: false };
+}
+
+/**
+ * Force a new session for a phone number (used by /nova command).
+ */
+export function resetSessionForPhone(phone: string): void {
+  persistentSessions.delete(phone);
 }
 
 // Track ALL active spawns (multi-session support)
@@ -105,12 +150,31 @@ export async function spawnClaudeForCall(session: InboundSession): Promise<boole
 
 /**
  * Spawn a Claude Code CLI process to handle a WhatsApp message.
+ * Uses persistent sessions: first message creates a session, subsequent
+ * messages resume it so Claude has full conversation history.
  */
 export async function spawnClaudeForWhatsApp(msg: WhatsAppMessage): Promise<boolean> {
   ensureWorkspace();
   const messageContent = msg.transcript || msg.text || msg.caption || '(media message)';
-  const baseContext = await buildBasePrompt(messageContent);
   const mediaInfo = msg.mediaLocalPath ? `\nMedia file saved at: ${msg.mediaLocalPath} (type: ${msg.mimeType})` : '';
+
+  const { uuid, isResume } = getOrCreateSessionUuid(msg.from);
+
+  if (isResume) {
+    // Resume existing session — just send the new message as prompt
+    const prompt = [
+      `New WhatsApp message from ${msg.from} (${msg.type}):`,
+      `"${messageContent}"${mediaInfo}`,
+      ``,
+      `Respond via send_whatsapp. Check read_whatsapp for any other pending messages.`,
+    ].join('\n');
+
+    console.error(`[Lein:Spawner] Resuming session ${uuid} for ${msg.from}`);
+    return doSpawn(prompt, `whatsapp-${msg.id}`, 'whatsapp', msg.from, { claudeSessionId: uuid, resume: true });
+  }
+
+  // First message — create new session with full context
+  const baseContext = await buildBasePrompt(messageContent);
 
   const prompt = [
     `You received a WhatsApp message from the user!`,
@@ -135,18 +199,31 @@ export async function spawnClaudeForWhatsApp(msg: WhatsAppMessage): Promise<bool
     `10. MEMORY: Use \`recall\` at start to get relevant context. Use \`remember\` to save important decisions, findings, and a session summary before finishing. Include the project name if working on a specific project.`,
   ].join('\n');
 
-  return doSpawn(prompt, `whatsapp-${msg.id}`, 'whatsapp', msg.from);
+  console.error(`[Lein:Spawner] Creating new session ${uuid} for ${msg.from}`);
+  return doSpawn(prompt, `whatsapp-${msg.id}`, 'whatsapp', msg.from, { claudeSessionId: uuid, resume: false });
 }
 
-function doSpawn(prompt: string, sessionId: string, source: 'call' | 'whatsapp', phone?: string): boolean {
+interface SpawnOptions {
+  claudeSessionId?: string;
+  resume?: boolean;
+}
+
+function doSpawn(prompt: string, sessionId: string, source: 'call' | 'whatsapp', phone?: string, options?: SpawnOptions): boolean {
   console.error(`[Lein:Spawner] Spawning Claude session ${sessionId} in ${WORKSPACE_DIR}`);
 
   try {
-    const child = spawn(CLAUDE_BIN, [
-      '--dangerously-skip-permissions',
-      '-p',
-      prompt,
-    ], {
+    const args = ['--dangerously-skip-permissions', '-p', prompt];
+
+    // Persistent session support
+    if (options?.claudeSessionId) {
+      if (options.resume) {
+        args.unshift('--resume', options.claudeSessionId);
+      } else {
+        args.unshift('--session-id', options.claudeSessionId);
+      }
+    }
+
+    const child = spawn(CLAUDE_BIN, args, {
       cwd: WORKSPACE_DIR,
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: true,
@@ -163,6 +240,7 @@ function doSpawn(prompt: string, sessionId: string, source: 'call' | 'whatsapp',
       sessionId,
       source,
       startedAt: Date.now(),
+      claudeSessionId: options?.claudeSessionId,
     });
 
     if (source === 'call') {
