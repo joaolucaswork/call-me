@@ -166,13 +166,11 @@ async function main() {
     // If /nova prefix: always spawn new session regardless of active calls
     if (parsed.prefix === 'nova') {
       console.error(`[Lein] WhatsApp /nova from ${msg.from} — forcing new session`);
-      resetSessionForPhone(msg.from); // Clear persistent session so a fresh one is created
+      resetSessionForPhone(msg.from); // Clear persistent session AND kill active sessions
       // Override message text with clean (prefix-stripped) version
       msg.text = parsed.cleanMessage || messageText;
-      if (connectedSessions === 0 && getActiveSessionCount() === 0) {
-        await spawnClaudeForWhatsApp(msg);
-      }
-      // If MCP or spawn active, it'll be read via read_whatsapp
+      // Always spawn — resetSessionForPhone already killed any active sessions for this phone
+      await spawnClaudeForWhatsApp(msg);
       return;
     }
 

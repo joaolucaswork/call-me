@@ -347,23 +347,24 @@ export async function sendDocument(to: string, documentUrl: string, filename?: s
 /**
  * Download media from WhatsApp via Kapso proxy
  */
-async function downloadMedia(mediaId: string): Promise<{ buffer: Buffer; mimeType: string; localPath: string } | null> {
+async function downloadMedia(mediaId: string, kapsoMediaUrl?: string): Promise<{ buffer: Buffer; mimeType: string; localPath: string } | null> {
   try {
-    // First get the media URL
-    const metaRes = await kapsoFetch(`${KAPSO_API_URL}/${mediaId}`, {
-      method: 'GET',
-    });
-    const meta = await metaRes.json() as any;
-    if (!meta.url) return null;
+    let buffer: Buffer;
+    let mimeType: string;
 
-    // Download the actual file
-    const mediaRes = await fetch(meta.url, {
-      headers: { 'X-API-Key': KAPSO_API_KEY },
-    });
-    if (!mediaRes.ok) return null;
-
-    const buffer = Buffer.from(await mediaRes.arrayBuffer());
-    const mimeType = meta.mime_type || mediaRes.headers.get('content-type') || 'application/octet-stream';
+    // Try Kapso direct URL first (from webhook enrichment), then fall back to Cloud API
+    if (kapsoMediaUrl) {
+      console.error(`[WhatsApp] Downloading media via Kapso URL: ${kapsoMediaUrl.slice(0, 80)}...`);
+      const mediaRes = await fetch(kapsoMediaUrl);
+      if (!mediaRes.ok) {
+        console.error(`[WhatsApp] Kapso URL download failed (${mediaRes.status}), falling back to Cloud API`);
+        return await downloadMediaViaCloudApi(mediaId);
+      }
+      buffer = Buffer.from(await mediaRes.arrayBuffer());
+      mimeType = mediaRes.headers.get('content-type') || 'application/octet-stream';
+    } else {
+      return await downloadMediaViaCloudApi(mediaId);
+    }
 
     // Save locally
     if (!existsSync(MEDIA_DIR)) mkdirSync(MEDIA_DIR, { recursive: true });
@@ -374,6 +375,34 @@ async function downloadMedia(mediaId: string): Promise<{ buffer: Buffer; mimeTyp
     return { buffer, mimeType, localPath };
   } catch (err) {
     console.error(`[WhatsApp] Failed to download media ${mediaId}:`, err);
+    return null;
+  }
+}
+
+async function downloadMediaViaCloudApi(mediaId: string): Promise<{ buffer: Buffer; mimeType: string; localPath: string } | null> {
+  try {
+    const metaRes = await kapsoFetch(`${KAPSO_API_URL}/${mediaId}`, {
+      method: 'GET',
+    });
+    const meta = await metaRes.json() as any;
+    if (!meta.url) return null;
+
+    const mediaRes = await fetch(meta.url, {
+      headers: { 'X-API-Key': KAPSO_API_KEY },
+    });
+    if (!mediaRes.ok) return null;
+
+    const buffer = Buffer.from(await mediaRes.arrayBuffer());
+    const mimeType = meta.mime_type || mediaRes.headers.get('content-type') || 'application/octet-stream';
+
+    if (!existsSync(MEDIA_DIR)) mkdirSync(MEDIA_DIR, { recursive: true });
+    const ext = mimeTypeToExt(mimeType);
+    const localPath = join(MEDIA_DIR, `${mediaId}.${ext}`);
+    writeFileSync(localPath, buffer);
+
+    return { buffer, mimeType, localPath };
+  } catch (err) {
+    console.error(`[WhatsApp] Cloud API download failed for ${mediaId}:`, err);
     return null;
   }
 }
@@ -472,42 +501,59 @@ async function ingestMessage(raw: any): Promise<void> {
     type: (['text', 'audio', 'image', 'video', 'document', 'reaction'].includes(msgType) ? msgType : 'unknown') as WhatsAppMessage['type'],
   };
 
+  // Kapso webhook enrichment: direct media URL (more reliable than Cloud API download)
+  const kapsoMediaUrl = raw.kapso?.media_url || raw.kapso?.media_data?.url;
+
   // Extract content based on type
   if (msgType === 'text' && raw.text) {
     msg.text = raw.text.body || raw.text;
   } else if (msgType === 'audio' && raw.audio) {
-    const media = await downloadMedia(raw.audio.id);
+    const media = await downloadMedia(raw.audio.id, kapsoMediaUrl);
     if (media) {
       msg.mediaLocalPath = media.localPath;
       msg.mimeType = media.mimeType;
-      // Auto-transcribe
-      const transcript = await transcribeAudio(media.buffer, media.mimeType);
-      if (transcript) {
-        msg.transcript = transcript;
-        msg.text = transcript; // Make searchable
+      // Auto-transcribe (prefer Kapso transcript if available)
+      const kapsoTranscript = raw.kapso?.transcript?.text;
+      if (kapsoTranscript) {
+        msg.transcript = kapsoTranscript;
+        msg.text = kapsoTranscript;
+      } else {
+        const transcript = await transcribeAudio(media.buffer, media.mimeType);
+        if (transcript) {
+          msg.transcript = transcript;
+          msg.text = transcript;
+        }
       }
+    } else if (raw.kapso?.transcript?.text) {
+      // Even if download fails, use Kapso transcript
+      msg.transcript = raw.kapso.transcript.text;
+      msg.text = raw.kapso.transcript.text;
     }
   } else if (msgType === 'image' && raw.image) {
-    const media = await downloadMedia(raw.image.id);
+    const media = await downloadMedia(raw.image.id, kapsoMediaUrl);
     if (media) {
       msg.mediaLocalPath = media.localPath;
       msg.mimeType = media.mimeType;
       msg.caption = raw.image.caption;
     }
+    // Store Kapso media URL as fallback for reading
+    if (kapsoMediaUrl) msg.mediaUrl = kapsoMediaUrl;
   } else if (msgType === 'video' && raw.video) {
-    const media = await downloadMedia(raw.video.id);
+    const media = await downloadMedia(raw.video.id, kapsoMediaUrl);
     if (media) {
       msg.mediaLocalPath = media.localPath;
       msg.mimeType = media.mimeType;
       msg.caption = raw.video.caption;
     }
+    if (kapsoMediaUrl) msg.mediaUrl = kapsoMediaUrl;
   } else if (msgType === 'document' && raw.document) {
-    const media = await downloadMedia(raw.document.id);
+    const media = await downloadMedia(raw.document.id, kapsoMediaUrl);
     if (media) {
       msg.mediaLocalPath = media.localPath;
       msg.mimeType = media.mimeType;
       msg.caption = raw.document.caption;
     }
+    if (kapsoMediaUrl) msg.mediaUrl = kapsoMediaUrl;
   }
 
   // Store
@@ -567,7 +613,9 @@ export async function getMessages(limit = 20, sinceTimestamp?: number): Promise<
       timestamp: m.timestamp ? parseInt(m.timestamp) * 1000 : Date.now(),
       type: (m.type || 'text') as WhatsAppMessage['type'],
       text: m.text?.body || m.kapso?.content || undefined,
-      caption: m.image?.caption || m.video?.caption || m.document?.caption || undefined,
+      caption: m.image?.caption || m.video?.caption || m.document?.caption || m.kapso?.message_type_data?.caption || undefined,
+      mediaUrl: m.kapso?.media_url || m.kapso?.media_data?.url || undefined,
+      mimeType: m.kapso?.media_data?.content_type || m.image?.mime_type || m.audio?.mime_type || undefined,
     }));
 
     return apiMessages;
