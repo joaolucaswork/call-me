@@ -227,7 +227,13 @@ function doSpawn(prompt: string, sessionId: string, source: 'call' | 'whatsapp',
       cwd: WORKSPACE_DIR,
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: true,
-      env: { ...process.env, HOME: homedir(), CLAUDECODE: '', CLAUDE_CODE_ENTRYPOINT: '' },
+      env: {
+        ...process.env,
+        HOME: homedir(),
+        CLAUDECODE: '',
+        CLAUDE_CODE_ENTRYPOINT: '',
+        ...(options?.claudeSessionId ? { LEIN_CLAUDE_SESSION_ID: options.claudeSessionId } : {}),
+      },
     });
 
     if (!child.pid) {

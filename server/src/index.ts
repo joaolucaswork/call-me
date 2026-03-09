@@ -464,19 +464,25 @@ async function main() {
         const to = args.to || ''; // Empty = use default from config
         const msgType = args.type || 'text';
 
+        // Prefix messages with session ID so user can `claude --resume <id>`
+        const sessionId = process.env.LEIN_CLAUDE_SESSION_ID;
+        const prefix = sessionId ? `[${sessionId}]\n` : '';
+        const prefixedMessage = prefix + (args.message || '');
+        const prefixedCaption = args.caption ? prefix + args.caption : args.caption;
+
         let result: any;
         switch (msgType) {
           case 'image':
-            result = await apiCall('/whatsapp/send_image', { to, image_url: args.media_url, caption: args.caption || args.message });
+            result = await apiCall('/whatsapp/send_image', { to, image_url: args.media_url, caption: prefixedCaption || prefixedMessage });
             break;
           case 'audio':
             result = await apiCall('/whatsapp/send_audio', { to, audio_url: args.media_url });
             break;
           case 'document':
-            result = await apiCall('/whatsapp/send_document', { to, document_url: args.media_url, filename: args.filename, caption: args.caption || args.message });
+            result = await apiCall('/whatsapp/send_document', { to, document_url: args.media_url, filename: args.filename, caption: prefixedCaption || prefixedMessage });
             break;
           default:
-            result = await apiCall('/whatsapp/send_text', { to, message: args.message });
+            result = await apiCall('/whatsapp/send_text', { to, message: prefixedMessage });
         }
 
         const r = result as { success: boolean; messageId?: string; error?: string };
