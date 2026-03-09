@@ -208,6 +208,32 @@ async function kapsoFetch(path: string, options: RequestInit = {}): Promise<Resp
   });
 }
 
+// ─── Read receipts ───
+
+/**
+ * Mark a message as read via WhatsApp Business API.
+ * This shows the blue checkmarks and triggers the "typing" visual cue.
+ * Fire-and-forget: errors are logged but never block processing.
+ */
+async function sendReadReceipt(messageId: string): Promise<void> {
+  try {
+    const res = await kapsoFetch('/messages', {
+      method: 'POST',
+      body: JSON.stringify({
+        messaging_product: 'whatsapp',
+        status: 'read',
+        message_id: messageId,
+      }),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      console.error(`[WhatsApp] Read receipt failed for ${messageId}:`, (data as any).error?.message || res.status);
+    }
+  } catch (err) {
+    console.error(`[WhatsApp] Read receipt error for ${messageId}:`, err);
+  }
+}
+
 // ─── Send messages ───
 
 export async function sendText(to: string, body: string): Promise<{ success: boolean; messageId?: string; error?: string }> {
@@ -495,6 +521,13 @@ async function ingestMessage(raw: any): Promise<void> {
   addToSessionHistory(msg.from, 'user', content);
 
   console.error(`[WhatsApp] Received ${msg.type} from ${msg.from}: ${msg.text || msg.caption || '(media)'}`);
+
+  // Send read receipt immediately (fire-and-forget) so user sees blue checkmarks
+  // while debounce and processing happen in background
+  if (msg.id && !msg.id.startsWith('msg-')) {
+    sendReadReceipt(msg.id);
+  }
+
   notifyNewMessage(msg);
 }
 
