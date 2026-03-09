@@ -12,6 +12,7 @@ import { homedir } from 'os';
 import { type InboundSession, claimSession } from './session-manager.js';
 import { listProjects, readMemory, WORKSPACE_DIR, ensureWorkspace } from './workspace.js';
 import type { WhatsAppMessage } from './whatsapp.js';
+import { getContextForSpawn, isMem0Configured } from './mem0.js';
 
 const CLAUDE_BIN = join(homedir(), '.local', 'bin', 'claude');
 
@@ -44,12 +45,24 @@ function buildProjectList(): string {
   return projects.map(p => `- ${p.name} (${p.path})`).join('\n');
 }
 
-function buildBasePrompt(): string {
-  const memory = readMemory();
+async function buildBasePrompt(message?: string, project?: string): Promise<string> {
   const projectList = buildProjectList();
+  let memoryContent: string;
+
+  if (isMem0Configured()) {
+    const mem0Context = await getContextForSpawn(message || '', project);
+    if (mem0Context) {
+      memoryContent = mem0Context;
+    } else {
+      memoryContent = readMemory();
+    }
+  } else {
+    memoryContent = readMemory();
+  }
+
   return [
     `--- LEIN MEMORY ---`,
-    memory,
+    memoryContent,
     `--- END MEMORY ---`,
     ``,
     `--- AVAILABLE PROJECTS ---`,
@@ -61,9 +74,9 @@ function buildBasePrompt(): string {
 /**
  * Spawn a Claude Code CLI process to handle an inbound call.
  */
-export function spawnClaudeForCall(session: InboundSession): boolean {
+export async function spawnClaudeForCall(session: InboundSession): Promise<boolean> {
   ensureWorkspace();
-  const baseContext = buildBasePrompt();
+  const baseContext = await buildBasePrompt(session.transcript);
 
   const prompt = [
     `URGENT: There is an active inbound phone call waiting for you!`,
@@ -92,10 +105,10 @@ export function spawnClaudeForCall(session: InboundSession): boolean {
 /**
  * Spawn a Claude Code CLI process to handle a WhatsApp message.
  */
-export function spawnClaudeForWhatsApp(msg: WhatsAppMessage): boolean {
+export async function spawnClaudeForWhatsApp(msg: WhatsAppMessage): Promise<boolean> {
   ensureWorkspace();
-  const baseContext = buildBasePrompt();
   const messageContent = msg.transcript || msg.text || msg.caption || '(media message)';
+  const baseContext = await buildBasePrompt(messageContent);
   const mediaInfo = msg.mediaLocalPath ? `\nMedia file saved at: ${msg.mediaLocalPath} (type: ${msg.mimeType})` : '';
 
   const prompt = [
