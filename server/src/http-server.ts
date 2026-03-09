@@ -47,6 +47,10 @@ interface PendingWhatsAppMsg {
 }
 const pendingWhatsAppByCall = new Map<string, PendingWhatsAppMsg[]>();
 
+// Rate limiter for queue acknowledgment messages (per sender, once per 60s)
+const lastQueueAckSent = new Map<string, number>();
+const QUEUE_ACK_COOLDOWN_MS = 60_000;
+
 function enqueuePendingWhatsApp(callId: string, msg: PendingWhatsAppMsg): void {
   if (!pendingWhatsAppByCall.has(callId)) {
     pendingWhatsAppByCall.set(callId, []);
@@ -214,6 +218,15 @@ async function main() {
       }
     } else {
       console.error(`[Lein] ${connectedSessions} MCP + ${getActiveSessionCount()} spawned session(s) — message will be read via read_whatsapp`);
+      // Send a rate-limited queue acknowledgment so the user knows their message was received
+      const now = Date.now();
+      const lastAck = lastQueueAckSent.get(msg.from) || 0;
+      if (now - lastAck > QUEUE_ACK_COOLDOWN_MS) {
+        lastQueueAckSent.set(msg.from, now);
+        whatsappSendText(msg.from, 'Recebi! Estou processando outra mensagem, já te respondo.').catch(err => {
+          console.error(`[Lein] Failed to send queue ack to ${msg.from}:`, err);
+        });
+      }
     }
   });
 
