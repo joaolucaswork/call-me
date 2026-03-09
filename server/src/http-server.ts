@@ -11,7 +11,7 @@ import { CallManager, loadServerConfig } from './phone-call.js';
 import { startNgrok, stopNgrok } from './ngrok.js';
 import { createServer } from 'http';
 import { writeSession, completeSession, cleanupAllSessions, type InboundSession } from './session-manager.js';
-import { spawnClaudeForCall, hasActiveSpawn } from './claude-spawner.js';
+import { spawnClaudeForCall, spawnClaudeForWhatsApp, hasActiveSpawn } from './claude-spawner.js';
 import { findMostRecentProject, formatProjectSummary } from './project-scanner.js';
 import {
   handleWebhook as handleWhatsAppWebhook,
@@ -111,6 +111,21 @@ async function main() {
       }
     } else {
       console.error(`[Inbound] ${connectedSessions} Claude session(s) connected — hooks will notify`);
+    }
+  });
+
+  // Auto-spawn Claude when WhatsApp message arrives with no active sessions
+  onNewMessage((msg) => {
+    if (connectedSessions === 0 && !hasActiveSpawn()) {
+      console.error(`[WhatsApp] No Claude sessions connected — auto-spawning for message from ${msg.from}`);
+      const spawned = spawnClaudeForWhatsApp(msg);
+      if (spawned) {
+        console.error('[WhatsApp] Claude CLI spawned for WhatsApp message');
+      } else {
+        console.error('[WhatsApp] Failed to spawn Claude CLI for WhatsApp');
+      }
+    } else {
+      console.error(`[WhatsApp] ${connectedSessions} session(s) connected — message will be read via read_whatsapp`);
     }
   });
 
