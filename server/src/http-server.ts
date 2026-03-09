@@ -188,6 +188,7 @@ async function main() {
       if (activeCall) {
         console.error(`[Lein] WhatsApp from ${msg.from} routed to active call ${activeCall.callId}`);
         // Enqueue for piggyback delivery on next call API response
+        // This is the ONLY delivery mechanism — no TTS, no read_whatsapp needed
         enqueuePendingWhatsApp(activeCall.callId, {
           from: msg.from,
           text: messageText,
@@ -196,12 +197,6 @@ async function main() {
           mimeType: msg.mimeType,
           timestamp: msg.timestamp || Date.now(),
         });
-        // Also notify on the call via TTS so user knows a message arrived
-        try {
-          await callManager.notifyWhatsAppMessage(activeCall.callId, messageText);
-        } catch (err) {
-          console.error(`[Lein] Failed to notify call about WhatsApp:`, err);
-        }
         // Don't spawn a new session — message will be delivered via piggyback
         return;
       }
@@ -285,7 +280,7 @@ async function main() {
           return {
             ...base,
             pendingWhatsApp: pending,
-            _whatsappNotice: `IMPORTANT: ${pending.length} WhatsApp message(s) arrived during this call. Read them above and respond to the user about their WhatsApp message(s) using continue_call or send_whatsapp.`,
+            _whatsappNotice: `IMPORTANT: ${pending.length} WhatsApp message(s) arrived during this call. Respond to the user about their WhatsApp message(s) via continue_call ONLY. Do NOT send_whatsapp or read_whatsapp — the messages are already here.`,
           };
         };
 

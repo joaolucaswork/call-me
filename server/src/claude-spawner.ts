@@ -11,7 +11,7 @@ import { join } from 'path';
 import { homedir } from 'os';
 import { type InboundSession, claimSession } from './session-manager.js';
 import { listProjects, readMemory, WORKSPACE_DIR, ensureWorkspace } from './workspace.js';
-import { type WhatsAppMessage, getSession } from './whatsapp.js';
+import type { WhatsAppMessage } from './whatsapp.js';
 
 const CLAUDE_BIN = join(homedir(), '.local', 'bin', 'claude');
 
@@ -83,8 +83,7 @@ export function spawnClaudeForCall(session: InboundSession): boolean {
     `5. Keep the call active and follow the caller's instructions`,
     `6. If the caller hangs up, wait for them to call back`,
     `7. Do NOT end the call unless explicitly asked to`,
-    `8. Use read_whatsapp periodically to check for WhatsApp messages — the user may send text/images via WhatsApp during the call`,
-    `9. If a WhatsApp notification plays on the call, immediately read_whatsapp to get the full message`,
+    `8. WhatsApp messages sent during this call are AUTOMATICALLY delivered in the response of continue_call/speak_to_user/get_call_status (look for "pendingWhatsApp" in the JSON). Do NOT call read_whatsapp or send_whatsapp — respond to WhatsApp messages via the CALL only.`,
   ].join('\n');
 
   return doSpawn(prompt, session.callId, 'call');
