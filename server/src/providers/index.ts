@@ -38,6 +38,9 @@ export interface ProviderConfig {
   sttModel?: string;
   sttSilenceDurationMs?: number;
   sttVadThreshold?: number;
+
+  // ConversationRelay voice (ElevenLabs voice ID for Twilio ConversationRelay)
+  conversationRelayVoice?: string;
 }
 
 export function loadProviderConfig(): ProviderConfig {
@@ -67,6 +70,7 @@ export function loadProviderConfig(): ProviderConfig {
     sttModel: process.env.LEIN_STT_MODEL || 'gpt-4o-transcribe',
     sttSilenceDurationMs,
     sttVadThreshold,
+    conversationRelayVoice: process.env.LEIN_CONVERSATION_RELAY_VOICE || 'onwK4e9ZLuTAKqWW03F9',
   };
 }
 
@@ -76,7 +80,7 @@ export function createPhoneProvider(config: ProviderConfig): PhoneProvider {
     accountSid: config.phoneAccountSid,
     authToken: config.phoneAuthToken,
     phoneNumber: config.phoneNumber,
-    voice: config.ttsVoice,
+    voice: config.conversationRelayVoice,
   });
   return provider;
 }

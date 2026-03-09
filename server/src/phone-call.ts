@@ -138,7 +138,9 @@ export class CallManager {
     if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
       throw new Error('WebSocket not connected');
     }
-    state.ws.send(JSON.stringify({ type: 'text', token: text, last: true }));
+    const msg = JSON.stringify({ type: 'text', token: text, last: true });
+    console.error(`[${state.callId}] WS send: ${msg.substring(0, 200)}`);
+    state.ws.send(msg);
   }
 
   private waitForPrompt(state: CallState, timeoutMs?: number): Promise<string> {
@@ -340,6 +342,7 @@ export class CallManager {
 
       ws.on('message', (message: Buffer | string) => {
         const text = typeof message === 'string' ? message : message.toString();
+        console.error(`[${callId}] WS recv: ${text.substring(0, 200)}`);
         let msg: any;
         try {
           msg = JSON.parse(text);
@@ -476,7 +479,14 @@ export class CallManager {
       return;
     }
 
-    // For 'in-progress' or 'ringing' (outbound) — return TwiML with ConversationRelay
+    // Only return ConversationRelay TwiML for 'in-progress' (call answered)
+    // For 'initiated' and 'ringing', return empty response to avoid duplicate ConversationRelay sessions
+    if (callStatus !== 'in-progress') {
+      res.writeHead(200, { 'Content-Type': 'application/xml' });
+      res.end('<?xml version="1.0" encoding="UTF-8"?><Response></Response>');
+      return;
+    }
+
     let wsUrl = `wss://${new URL(this.config.publicUrl).host}/media-stream`;
 
     if (callSid) {

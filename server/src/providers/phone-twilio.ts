@@ -107,14 +107,11 @@ export class TwilioPhoneProvider implements PhoneProvider {
     const greeting = options?.welcomeGreeting
       ? ` welcomeGreeting="${this.escapeXml(options.welcomeGreeting)}"`
       : '';
-    const statusAttr = options?.statusCallbackUrl
-      ? ` statusCallback="${options.statusCallbackUrl}" statusCallbackMethod="POST"`
-      : '';
 
     return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Connect${statusAttr}>
-    <ConversationRelay url="${wsUrl}" ttsProvider="ElevenLabs" voice="${voice}" language="pt-BR" transcriptionProvider="Deepgram" dtmfDetection="true" interruptible="true"${greeting} />
+  <Connect>
+    <ConversationRelay url="${wsUrl}" ttsProvider="Google" voice="${voice}" language="pt-BR" transcriptionProvider="Deepgram" dtmfDetection="true" interruptible="true"${greeting} />
   </Connect>
 </Response>`;
   }
