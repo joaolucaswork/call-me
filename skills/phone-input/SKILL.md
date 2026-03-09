@@ -71,7 +71,7 @@ Verifica se a ligacao ainda esta ativa, se o usuario desligou, ou se nao foi enc
 
 Se um metodo falhar, tentar o proximo:
 
-1. **MCP Tool**: `mcp__plugin_callme_callme__initiate_call`
+1. **MCP Tool**: `mcp__plugin_lein_lein__initiate_call`
 2. **Script Local**: `bun ~/.claude/scripts/callme.js <action> "mensagem" [call_id]`
 3. **API Direta**: `POST http://localhost:3334/api/initiate_call`
 

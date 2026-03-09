@@ -1,5 +1,5 @@
 /**
- * WhatsApp Module for CallMe
+ * WhatsApp Module for Lein
  *
  * Uses Kapso as a proxy to WhatsApp Business API.
  * Supports sending/receiving text, audio, and images.
@@ -8,18 +8,15 @@
 import { writeFileSync, readFileSync, mkdirSync, existsSync, readdirSync, unlinkSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { MEDIA_DIR, SESSIONS_DIR } from './workspace.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // Kapso config
-const KAPSO_API_KEY = process.env.CALLME_KAPSO_API_KEY || '';
-const KAPSO_PHONE_NUMBER_ID = process.env.CALLME_KAPSO_PHONE_NUMBER_ID || '';
+const KAPSO_API_KEY = process.env.LEIN_KAPSO_API_KEY || '';
+const KAPSO_PHONE_NUMBER_ID = process.env.LEIN_KAPSO_PHONE_NUMBER_ID || '';
 const KAPSO_API_URL = 'https://api.kapso.ai/meta/whatsapp/v24.0';
 const KAPSO_PLATFORM_URL = 'https://api.kapso.ai/platform/v1';
-
-// Where to store downloaded media and sessions
-const MEDIA_DIR = join(__dirname, '..', '.media');
-const SESSIONS_DIR = join(__dirname, '..', '.whatsapp-sessions');
 
 // WhatsApp message length limit
 const MAX_MESSAGE_LENGTH = 4000;
@@ -54,8 +51,8 @@ export function loadWhatsAppConfig(): WhatsAppConfig | null {
   return {
     apiKey: KAPSO_API_KEY,
     phoneNumberId: KAPSO_PHONE_NUMBER_ID,
-    userPhoneNumber: process.env.CALLME_USER_PHONE_NUMBER || '',
-    openaiApiKey: process.env.CALLME_OPENAI_API_KEY || '',
+    userPhoneNumber: process.env.LEIN_USER_PHONE_NUMBER || '',
+    openaiApiKey: process.env.LEIN_OPENAI_API_KEY || '',
   };
 }
 
@@ -98,7 +95,7 @@ async function kapsoFetch(path: string, options: RequestInit = {}): Promise<Resp
 // ─── Send messages ───
 
 export async function sendText(to: string, body: string): Promise<{ success: boolean; messageId?: string; error?: string }> {
-  to = to || process.env.CALLME_USER_PHONE_NUMBER || '';
+  to = to || process.env.LEIN_USER_PHONE_NUMBER || '';
   if (!to) return { success: false, error: 'No recipient phone number' };
   try {
     const res = await kapsoFetch('/messages', {
@@ -125,7 +122,7 @@ export async function sendText(to: string, body: string): Promise<{ success: boo
 }
 
 export async function sendImage(to: string, imageUrl: string, caption?: string): Promise<{ success: boolean; messageId?: string; error?: string }> {
-  to = to || process.env.CALLME_USER_PHONE_NUMBER || '';
+  to = to || process.env.LEIN_USER_PHONE_NUMBER || '';
   if (!to) return { success: false, error: 'No recipient phone number' };
   try {
     const res = await kapsoFetch('/messages', {
@@ -150,7 +147,7 @@ export async function sendImage(to: string, imageUrl: string, caption?: string):
 }
 
 export async function sendAudio(to: string, audioUrl: string): Promise<{ success: boolean; messageId?: string; error?: string }> {
-  to = to || process.env.CALLME_USER_PHONE_NUMBER || '';
+  to = to || process.env.LEIN_USER_PHONE_NUMBER || '';
   if (!to) return { success: false, error: 'No recipient phone number' };
   try {
     const res = await kapsoFetch('/messages', {
@@ -175,7 +172,7 @@ export async function sendAudio(to: string, audioUrl: string): Promise<{ success
 }
 
 export async function sendDocument(to: string, documentUrl: string, filename?: string, caption?: string): Promise<{ success: boolean; messageId?: string; error?: string }> {
-  to = to || process.env.CALLME_USER_PHONE_NUMBER || '';
+  to = to || process.env.LEIN_USER_PHONE_NUMBER || '';
   if (!to) return { success: false, error: 'No recipient phone number' };
   try {
     const res = await kapsoFetch('/messages', {
@@ -243,7 +240,7 @@ async function downloadMedia(mediaId: string): Promise<{ buffer: Buffer; mimeTyp
  * Transcribe audio using OpenAI Whisper API
  */
 async function transcribeAudio(buffer: Buffer, mimeType: string): Promise<string | null> {
-  const openaiKey = process.env.CALLME_OPENAI_API_KEY;
+  const openaiKey = process.env.LEIN_OPENAI_API_KEY;
   if (!openaiKey) return null;
 
   try {

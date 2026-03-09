@@ -4,8 +4,8 @@
 # Rate-limited to once per 60 seconds to avoid spam.
 
 API_URL="http://localhost:3334"
-RATE_LIMIT_FILE="/tmp/callme-whatsapp-last-status"
-SESSIONS_DIR="$(dirname "$0")/../server/.whatsapp-sessions"
+RATE_LIMIT_FILE="/tmp/lein-whatsapp-last-status"
+SESSIONS_DIR="$HOME/lein-workspace/sessions"
 RATE_LIMIT_SECONDS=60
 
 # Check if WhatsApp is configured by hitting health endpoint

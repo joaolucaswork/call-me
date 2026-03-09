@@ -2,7 +2,7 @@
 # Check for pending inbound calls on user prompt submit
 # Injects a notice if there's an active call waiting
 
-PENDING_FILE="/tmp/callme-pending-inbound.json"
+PENDING_FILE="/tmp/lein-pending-inbound.json"
 
 # Check if pending call file exists
 if [[ ! -f "$PENDING_FILE" ]]; then

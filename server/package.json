@@ -1,16 +1,16 @@
 {
-  "name": "callme-mcp",
-  "version": "1.0.2",
-  "description": "MCP server that lets Claude call you on the phone",
+  "name": "lein",
+  "version": "4.0.0",
+  "description": "Lein - Personal AI assistant with phone calls and WhatsApp",
   "type": "module",
   "main": "src/index.ts",
   "scripts": {
     "prestart": "bun install --silent",
     "start": "bun run src/index.ts",
     "server": "bun run src/http-server.ts",
-    "dev": "pm2 startOrRestart ecosystem.config.cjs && pm2 logs callme",
-    "dev:stop": "pm2 stop callme",
-    "dev:restart": "pm2 restart callme && pm2 logs callme"
+    "dev": "pm2 startOrRestart ecosystem.config.cjs && pm2 logs lein",
+    "dev:stop": "pm2 stop lein",
+    "dev:restart": "pm2 restart lein && pm2 logs lein"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.4",

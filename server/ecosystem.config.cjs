@@ -29,7 +29,7 @@ module.exports = {
       restart_delay: 5000,
     },
     {
-      name: 'callme',
+      name: 'lein',
       script: 'src/http-server.ts',
       interpreter: '/Users/lucas/.bun/bin/bun',
       cwd: '/Users/lucas/Documents/GitHub/call-me/server',
@@ -40,7 +40,7 @@ module.exports = {
       restart_delay: 5000,
       env: {
         NODE_ENV: 'production',
-        CALLME_PUBLIC_URL: 'https://helena-call.ngrok.app',
+        LEIN_PUBLIC_URL: 'https://helena-call.ngrok.app',
         ...envVars,
       },
     },

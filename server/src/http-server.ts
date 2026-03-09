@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 /**
- * CallMe HTTP Server (standalone)
+ * Lein HTTP Server (standalone)
  *
  * Runs the HTTP server + ngrok independently of the MCP.
  * This allows PM2 to keep the server running while Claude connects via MCP.
@@ -11,7 +11,8 @@ import { CallManager, loadServerConfig } from './phone-call.js';
 import { startNgrok, stopNgrok } from './ngrok.js';
 import { createServer } from 'http';
 import { writeSession, completeSession, cleanupAllSessions, type InboundSession } from './session-manager.js';
-import { spawnClaudeForCall, spawnClaudeForWhatsApp, hasActiveSpawn } from './claude-spawner.js';
+import { spawnClaudeForCall, spawnClaudeForWhatsApp, hasActiveSpawn, getActiveSessionCount } from './claude-spawner.js';
+import { ensureWorkspace } from './workspace.js';
 import { findMostRecentProject, formatProjectSummary } from './project-scanner.js';
 import {
   handleWebhook as handleWhatsAppWebhook,
@@ -34,15 +35,18 @@ let callManager: CallManager | null = null;
 let connectedSessions = 0;
 
 async function main() {
-  const port = parseInt(process.env.CALLME_PORT || '3333', 10);
-  const apiPort = parseInt(process.env.CALLME_API_PORT || '3334', 10);
+  // Initialize workspace directory structure
+  ensureWorkspace();
 
-  // Use CALLME_PUBLIC_URL if set (external ngrok or other tunnel), otherwise start ngrok
+  const port = parseInt(process.env.LEIN_PORT || '3333', 10);
+  const apiPort = parseInt(process.env.LEIN_API_PORT || '3334', 10);
+
+  // Use LEIN_PUBLIC_URL if set (external ngrok or other tunnel), otherwise start ngrok
   let publicUrl: string;
   let usingExternalTunnel = false;
 
-  if (process.env.CALLME_PUBLIC_URL) {
-    publicUrl = process.env.CALLME_PUBLIC_URL.replace(/\/$/, ''); // Remove trailing slash
+  if (process.env.LEIN_PUBLIC_URL) {
+    publicUrl = process.env.LEIN_PUBLIC_URL.replace(/\/$/, ''); // Remove trailing slash
     usingExternalTunnel = true;
     console.error(`Using external tunnel: ${publicUrl}`);
   } else {
@@ -76,7 +80,7 @@ async function main() {
         return msg;
       }).join(', ');
 
-      return `Oi Lucas! Analisei seus projetos e o mais recente é ${project.name}, na branch ${project.branch}. ` +
+      return `Oi Lucas! Sou a Lein. Analisei seus projetos e o mais recente é ${project.name}, na branch ${project.branch}. ` +
         `Os últimos commits foram: ${commitSummary}. ` +
         (project.gitStatus !== '(clean)' ? `Tem mudanças pendentes. ` : '') +
         `Quer trabalhar nele ou em outro projeto?`;
@@ -103,32 +107,32 @@ async function main() {
     };
     writeSession(session);
 
-    // Auto-spawn Claude if no MCP sessions are connected and no active spawn
-    if (connectedSessions === 0 && !hasActiveSpawn()) {
-      console.error('[Inbound] No Claude sessions connected — auto-spawning Claude CLI...');
+    // Auto-spawn Claude if no MCP sessions are connected (multi-session: always spawn)
+    if (connectedSessions === 0) {
+      console.error('[Lein] No MCP sessions connected — auto-spawning Claude CLI...');
       const spawned = spawnClaudeForCall(session);
       if (spawned) {
-        console.error('[Inbound] Claude CLI spawned successfully');
+        console.error('[Lein] Claude CLI spawned successfully');
       } else {
-        console.error('[Inbound] Failed to spawn Claude CLI — falling back to hooks');
+        console.error('[Lein] Failed to spawn Claude CLI — falling back to hooks');
       }
     } else {
-      console.error(`[Inbound] ${connectedSessions} Claude session(s) connected — hooks will notify`);
+      console.error(`[Lein] ${connectedSessions} MCP session(s) connected — hooks will notify`);
     }
   });
 
-  // Auto-spawn Claude when WhatsApp message arrives with no active sessions
+  // Auto-spawn Claude when WhatsApp message arrives with no MCP sessions
   onNewMessage((msg) => {
-    if (connectedSessions === 0 && !hasActiveSpawn()) {
-      console.error(`[WhatsApp] No Claude sessions connected — auto-spawning for message from ${msg.from}`);
+    if (connectedSessions === 0) {
+      console.error(`[Lein] WhatsApp from ${msg.from} — auto-spawning Claude session`);
       const spawned = spawnClaudeForWhatsApp(msg);
       if (spawned) {
-        console.error('[WhatsApp] Claude CLI spawned for WhatsApp message');
+        console.error('[Lein] Claude CLI spawned for WhatsApp message');
       } else {
-        console.error('[WhatsApp] Failed to spawn Claude CLI for WhatsApp');
+        console.error('[Lein] Failed to spawn Claude CLI for WhatsApp');
       }
     } else {
-      console.error(`[WhatsApp] ${connectedSessions} session(s) connected — message will be read via read_whatsapp`);
+      console.error(`[Lein] ${connectedSessions} MCP session(s) connected — message will be read via read_whatsapp`);
     }
   });
 
@@ -152,7 +156,7 @@ async function main() {
     // Health check doesn't need POST or body
     if (url.pathname === '/api/health') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ status: 'ok', publicUrl, connectedSessions, hasActiveSpawn: hasActiveSpawn() }));
+      res.end(JSON.stringify({ status: 'ok', publicUrl, connectedSessions, activeSpawns: getActiveSessionCount() }));
       return;
     }
 
@@ -277,7 +281,7 @@ async function main() {
   apiServer.listen(apiPort, () => {
     console.error(`API server listening on port ${apiPort}`);
     console.error('');
-    console.error('CallMe HTTP Server ready');
+    console.error('Lein Server ready');
     console.error(`Phone: ${serverConfig.phoneNumber} -> ${serverConfig.userPhoneNumber}`);
     console.error(`Webhook: ${publicUrl}/twiml`);
     if (isWhatsAppConfigured()) {

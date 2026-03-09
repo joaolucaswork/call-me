@@ -52,35 +52,35 @@ export interface ProviderConfig {
 }
 
 export function loadProviderConfig(): ProviderConfig {
-  const sttSilenceDurationMs = process.env.CALLME_STT_SILENCE_DURATION_MS
-    ? parseInt(process.env.CALLME_STT_SILENCE_DURATION_MS, 10)
+  const sttSilenceDurationMs = process.env.LEIN_STT_SILENCE_DURATION_MS
+    ? parseInt(process.env.LEIN_STT_SILENCE_DURATION_MS, 10)
     : undefined;
 
-  const sttVadThreshold = process.env.CALLME_STT_VAD_THRESHOLD
-    ? parseFloat(process.env.CALLME_STT_VAD_THRESHOLD)
+  const sttVadThreshold = process.env.LEIN_STT_VAD_THRESHOLD
+    ? parseFloat(process.env.LEIN_STT_VAD_THRESHOLD)
     : undefined;
 
   // Default to telnyx if not specified
-  const phoneProvider = (process.env.CALLME_PHONE_PROVIDER || 'telnyx') as PhoneProviderType;
+  const phoneProvider = (process.env.LEIN_PHONE_PROVIDER || 'telnyx') as PhoneProviderType;
 
   // Default to openai for TTS if not specified
-  const ttsProvider = (process.env.CALLME_TTS_PROVIDER || 'openai') as TTSProviderType;
+  const ttsProvider = (process.env.LEIN_TTS_PROVIDER || 'openai') as TTSProviderType;
 
   // Default voice depends on provider
   const defaultVoice = ttsProvider === 'elevenlabs' ? 'onwK4e9ZLuTAKqWW03F9' : 'onyx';
 
   return {
     phoneProvider,
-    phoneAccountSid: process.env.CALLME_PHONE_ACCOUNT_SID || '',
-    phoneAuthToken: process.env.CALLME_PHONE_AUTH_TOKEN || '',
-    phoneNumber: process.env.CALLME_PHONE_NUMBER || '',
-    telnyxPublicKey: process.env.CALLME_TELNYX_PUBLIC_KEY,
+    phoneAccountSid: process.env.LEIN_PHONE_ACCOUNT_SID || '',
+    phoneAuthToken: process.env.LEIN_PHONE_AUTH_TOKEN || '',
+    phoneNumber: process.env.LEIN_PHONE_NUMBER || '',
+    telnyxPublicKey: process.env.LEIN_TELNYX_PUBLIC_KEY,
     ttsProvider,
-    openaiApiKey: process.env.CALLME_OPENAI_API_KEY || '',
-    elevenlabsApiKey: process.env.CALLME_ELEVENLABS_API_KEY,
-    ttsVoice: process.env.CALLME_TTS_VOICE || defaultVoice,
-    ttsModel: process.env.CALLME_TTS_MODEL,
-    sttModel: process.env.CALLME_STT_MODEL || 'gpt-4o-transcribe',
+    openaiApiKey: process.env.LEIN_OPENAI_API_KEY || '',
+    elevenlabsApiKey: process.env.LEIN_ELEVENLABS_API_KEY,
+    ttsVoice: process.env.LEIN_TTS_VOICE || defaultVoice,
+    ttsModel: process.env.LEIN_TTS_MODEL,
+    sttModel: process.env.LEIN_STT_MODEL || 'gpt-4o-transcribe',
     sttSilenceDurationMs,
     sttVadThreshold,
   };
@@ -155,19 +155,19 @@ export function validateProviderConfig(config: ProviderConfig): string[] {
     : { accountSid: 'Telnyx Connection ID', authToken: 'Telnyx API Key' };
 
   if (!config.phoneAccountSid) {
-    errors.push(`Missing CALLME_PHONE_ACCOUNT_SID (${credentialDesc.accountSid})`);
+    errors.push(`Missing LEIN_PHONE_ACCOUNT_SID (${credentialDesc.accountSid})`);
   }
   if (!config.phoneAuthToken) {
-    errors.push(`Missing CALLME_PHONE_AUTH_TOKEN (${credentialDesc.authToken})`);
+    errors.push(`Missing LEIN_PHONE_AUTH_TOKEN (${credentialDesc.authToken})`);
   }
   if (!config.phoneNumber) {
-    errors.push('Missing CALLME_PHONE_NUMBER');
+    errors.push('Missing LEIN_PHONE_NUMBER');
   }
   if (!config.openaiApiKey) {
-    errors.push('Missing CALLME_OPENAI_API_KEY (required for STT)');
+    errors.push('Missing LEIN_OPENAI_API_KEY (required for STT)');
   }
   if (config.ttsProvider === 'elevenlabs' && !config.elevenlabsApiKey) {
-    errors.push('Missing CALLME_ELEVENLABS_API_KEY (required when TTS provider is elevenlabs)');
+    errors.push('Missing LEIN_ELEVENLABS_API_KEY (required when TTS provider is elevenlabs)');
   }
 
   return errors;

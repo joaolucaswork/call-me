@@ -83,8 +83,8 @@ export function loadServerConfig(publicUrl: string): ServerConfig {
   const providerConfig = loadProviderConfig();
   const errors = validateProviderConfig(providerConfig);
 
-  if (!process.env.CALLME_USER_PHONE_NUMBER) {
-    errors.push('Missing CALLME_USER_PHONE_NUMBER (where to call you)');
+  if (!process.env.LEIN_USER_PHONE_NUMBER) {
+    errors.push('Missing LEIN_USER_PHONE_NUMBER (where to call you)');
   }
 
   if (errors.length > 0) {
@@ -94,14 +94,14 @@ export function loadServerConfig(publicUrl: string): ServerConfig {
   const providers = createProviders(providerConfig);
 
   // Default 3 minutes for transcript timeout
-  const transcriptTimeoutMs = parseInt(process.env.CALLME_TRANSCRIPT_TIMEOUT_MS || '180000', 10);
+  const transcriptTimeoutMs = parseInt(process.env.LEIN_TRANSCRIPT_TIMEOUT_MS || '180000', 10);
 
   // Default greeting for inbound calls
-  const inboundGreeting = process.env.CALLME_INBOUND_GREETING ||
+  const inboundGreeting = process.env.LEIN_INBOUND_GREETING ||
     "Olá, aqui é o Claude. Como posso ajudar?";
 
   // Hold/keepalive interval (default 15 seconds, 0 to disable)
-  const holdIntervalMs = parseInt(process.env.CALLME_HOLD_INTERVAL_MS || '15000', 10);
+  const holdIntervalMs = parseInt(process.env.LEIN_HOLD_INTERVAL_MS || '15000', 10);
 
   const holdMessages = [
     "Ainda estou trabalhando nisso, um momento...",
@@ -112,9 +112,9 @@ export function loadServerConfig(publicUrl: string): ServerConfig {
 
   return {
     publicUrl,
-    port: parseInt(process.env.CALLME_PORT || '3333', 10),
+    port: parseInt(process.env.LEIN_PORT || '3333', 10),
     phoneNumber: providerConfig.phoneNumber,
-    userPhoneNumber: process.env.CALLME_USER_PHONE_NUMBER!,
+    userPhoneNumber: process.env.LEIN_USER_PHONE_NUMBER!,
     providers,
     providerConfig,
     transcriptTimeoutMs,
@@ -477,7 +477,7 @@ export class CallManager {
               return;
             }
           } else {
-            console.error('[Security] Warning: CALLME_TELNYX_PUBLIC_KEY not set, skipping signature verification');
+            console.error('[Security] Warning: LEIN_TELNYX_PUBLIC_KEY not set, skipping signature verification');
           }
 
           const event = JSON.parse(body);
@@ -882,7 +882,7 @@ export class CallManager {
     try {
       const fs = require('fs');
       const pendingCallInfo = { callId, from, transcript, timestamp: Date.now() };
-      fs.writeFileSync('/tmp/callme-pending-inbound.json', JSON.stringify(pendingCallInfo));
+      fs.writeFileSync('/tmp/lein-pending-inbound.json', JSON.stringify(pendingCallInfo));
       console.error(`[${callId}] Wrote pending inbound call info`);
     } catch (err) {
       console.error(`[${callId}] Failed to write pending call info:`, err);
@@ -949,7 +949,7 @@ export class CallManager {
     const callId = `call-${++this.currentCallId}-${Date.now()}`;
 
     // Read phone number dynamically from .env file (allows changing without restart)
-    const userPhoneNumber = readEnvFile('CALLME_USER_PHONE_NUMBER') || this.config.userPhoneNumber;
+    const userPhoneNumber = readEnvFile('LEIN_USER_PHONE_NUMBER') || this.config.userPhoneNumber;
 
     // Create realtime transcription session via provider
     const sttSession = this.config.providers.stt.createSession();

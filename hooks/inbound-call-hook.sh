@@ -2,7 +2,7 @@
 # Inbound Call Stop Hook
 # Checks for pending inbound calls and prompts Claude to respond
 
-PENDING_FILE="/tmp/callme-pending-inbound.json"
+PENDING_FILE="/tmp/lein-pending-inbound.json"
 
 # Check if pending call file exists
 if [[ ! -f "$PENDING_FILE" ]]; then

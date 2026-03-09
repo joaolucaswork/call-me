@@ -1,15 +1,14 @@
 /**
  * Session Manager
  *
- * Manages inbound call sessions via filesystem (/tmp/callme-sessions/).
+ * Manages inbound call sessions via filesystem (~/lein-workspace/sessions/).
  * When a call arrives and no Claude Code session is connected,
  * writes session files that a spawned Claude process can read.
  */
 
 import { mkdirSync, writeFileSync, readFileSync, readdirSync, unlinkSync, existsSync } from 'fs';
 import { join } from 'path';
-
-const SESSIONS_DIR = '/tmp/callme-sessions';
+import { SESSIONS_DIR } from './workspace.js';
 
 export interface InboundSession {
   callId: string;

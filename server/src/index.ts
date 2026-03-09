@@ -1,9 +1,9 @@
 #!/usr/bin/env bun
 
 /**
- * CallMe MCP Server
+ * Lein MCP Server
  *
- * A stdio-based MCP server that connects to the CallMe HTTP server.
+ * A stdio-based MCP server that connects to the Lein HTTP server.
  * Auto-starts the HTTP server if it's not already running.
  */
 
@@ -14,7 +14,7 @@ import { spawn, type Subprocess } from 'bun';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
-const API_PORT = parseInt(process.env.CALLME_API_PORT || '3334', 10);
+const API_PORT = parseInt(process.env.LEIN_API_PORT || '3334', 10);
 const API_BASE = `http://localhost:${API_PORT}/api`;
 
 let httpServerProcess: Subprocess | null = null;
@@ -86,8 +86,8 @@ async function startHttpServer(): Promise<void> {
 
   // Build public URL from ngrok domain if not already set
   const env = { ...process.env };
-  if (!env.CALLME_PUBLIC_URL && env.CALLME_NGROK_DOMAIN) {
-    env.CALLME_PUBLIC_URL = `https://${env.CALLME_NGROK_DOMAIN}`;
+  if (!env.LEIN_PUBLIC_URL && env.LEIN_NGROK_DOMAIN) {
+    env.LEIN_PUBLIC_URL = `https://${env.LEIN_NGROK_DOMAIN}`;
   }
 
   httpServerProcess = spawn({
@@ -146,7 +146,7 @@ async function main() {
 
   // Create stdio MCP server
   const mcpServer = new Server(
-    { name: 'callme', version: '3.0.0' },
+    { name: 'lein', version: '4.0.0' },
     { capabilities: { tools: {} } }
   );
 
@@ -433,7 +433,7 @@ async function main() {
   const transport = new StdioServerTransport();
   await mcpServer.connect(transport);
 
-  console.error('CallMe MCP ready');
+  console.error('Lein MCP ready');
 
   // On exit, notify HTTP server that this session is gone
   const shutdown = async () => {

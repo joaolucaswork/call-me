@@ -25,11 +25,11 @@ export async function startNgrok(port: number): Promise<string> {
 }
 
 async function doStartNgrok(port: number): Promise<string> {
-  const authtoken = process.env.CALLME_NGROK_AUTHTOKEN;
+  const authtoken = process.env.LEIN_NGROK_AUTHTOKEN;
 
   if (!authtoken) {
     throw new Error(
-      'CALLME_NGROK_AUTHTOKEN is required.\n' +
+      'LEIN_NGROK_AUTHTOKEN is required.\n' +
       'Get a free auth token at https://dashboard.ngrok.com/get-started/your-authtoken'
     );
   }
@@ -38,7 +38,7 @@ async function doStartNgrok(port: number): Promise<string> {
     addr: port,
     authtoken,
     // Use custom domain if configured (paid ngrok feature)
-    domain: process.env.CALLME_NGROK_DOMAIN || undefined,
+    domain: process.env.LEIN_NGROK_DOMAIN || undefined,
     // Enable pooling to allow multiple instances with same domain
     pooling: true,
   });
