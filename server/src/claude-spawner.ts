@@ -97,6 +97,7 @@ export async function spawnClaudeForCall(session: InboundSession): Promise<boole
     `6. If the caller hangs up, wait for them to call back`,
     `7. Do NOT end the call unless explicitly asked to`,
     `8. WhatsApp messages sent during this call are AUTOMATICALLY delivered in the response of continue_call/speak_to_user/get_call_status (look for "pendingWhatsApp" in the JSON). Do NOT call read_whatsapp or send_whatsapp — respond to WhatsApp messages via the CALL only.`,
+    `9. MEMORY: Use \`recall\` at start to get relevant context. Use \`remember\` to save important decisions, findings, and a session summary before finishing. Include the project name if working on a specific project.`,
   ].join('\n');
 
   return doSpawn(prompt, session.callId, 'call');
@@ -131,6 +132,7 @@ export async function spawnClaudeForWhatsApp(msg: WhatsAppMessage): Promise<bool
     `7. Keep monitoring for new WhatsApp messages and respond to each one`,
     `8. You can also use phone calls (initiate_call) if voice communication is better`,
     `9. Send status updates via WhatsApp every 2-3 minutes during long tasks`,
+    `10. MEMORY: Use \`recall\` at start to get relevant context. Use \`remember\` to save important decisions, findings, and a session summary before finishing. Include the project name if working on a specific project.`,
   ].join('\n');
 
   return doSpawn(prompt, `whatsapp-${msg.id}`, 'whatsapp', msg.from);
