@@ -9,7 +9,6 @@ import {
   validateProviderConfig,
   type ProviderRegistry,
   type ProviderConfig,
-  type RealtimeSTTSession,
 } from './providers/index.js';
 import {
   validateTwilioSignature,
@@ -17,23 +16,24 @@ import {
   validateWebSocketToken,
 } from './webhook-security.js';
 
+// ─── Types ───
+
 interface CallState {
   callId: string;
   callControlId: string | null;
   userPhoneNumber: string;
   ws: WebSocket | null;
-  streamSid: string | null;  // Twilio media stream ID (required for sending audio)
-  streamingReady: boolean;  // Reserved for future use
-  wsToken: string;  // Security token for WebSocket authentication
+  wsToken: string;
   conversationHistory: Array<{ speaker: 'claude' | 'user'; message: string }>;
   startTime: number;
   hungUp: boolean;
-  hungUpAt?: number;  // Timestamp when call was hung up
-  sttSession: RealtimeSTTSession | null;
-  isInbound?: boolean;  // True for incoming calls
-  keepaliveTimer?: ReturnType<typeof setTimeout> | null;  // Holdmusic keepalive timer
-  isSendingAudio?: boolean;  // True while audio is being sent (prevents keepalive overlap)
-  isPlayingKeepalive?: boolean;  // True while keepalive TTS is being generated/sent
+  hungUpAt?: number;
+  isInbound?: boolean;
+  relaySessionId?: string;
+  pendingTranscript: {
+    resolve: (text: string) => void;
+    reject: (err: Error) => void;
+  } | null;
 }
 
 export interface ServerConfig {
@@ -42,23 +42,20 @@ export interface ServerConfig {
   phoneNumber: string;
   userPhoneNumber: string;
   providers: ProviderRegistry;
-  providerConfig: ProviderConfig;  // For webhook signature verification
+  providerConfig: ProviderConfig;
   transcriptTimeoutMs: number;
-  inboundGreeting: string;  // Fallback greeting for incoming calls
-  getInboundGreeting?: () => string;  // Dynamic greeting generator (overrides inboundGreeting)
-  holdIntervalMs: number;  // Interval for keepalive hold messages (0 = disabled)
-  holdMessages: string[];  // Messages to cycle through during hold
+  inboundGreeting: string;
+  getInboundGreeting?: () => string;
 }
 
-/**
- * Read a value directly from the .env file (bypasses process.env cache)
- */
+// ─── Config ───
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
 function readEnvFile(key: string): string | undefined {
   try {
-    const __dirname = dirname(fileURLToPath(import.meta.url));
     const envPath = join(__dirname, '..', '.env');
     if (!existsSync(envPath)) return undefined;
-
     const content = readFileSync(envPath, 'utf8');
     for (const line of content.split('\n')) {
       const trimmed = line.trim();
@@ -72,9 +69,7 @@ function readEnvFile(key: string): string | undefined {
         }
       }
     }
-  } catch {
-    // Fall back to process.env
-  }
+  } catch {}
   return undefined;
 }
 
@@ -91,23 +86,9 @@ export function loadServerConfig(publicUrl: string): ServerConfig {
   }
 
   const providers = createProviders(providerConfig);
-
-  // Default 3 minutes for transcript timeout
   const transcriptTimeoutMs = parseInt(process.env.LEIN_TRANSCRIPT_TIMEOUT_MS || '180000', 10);
-
-  // Default greeting for inbound calls
   const inboundGreeting = process.env.LEIN_INBOUND_GREETING ||
-    "Olá, aqui é o Claude. Como posso ajudar?";
-
-  // Hold/keepalive interval (default 15 seconds, 0 to disable)
-  const holdIntervalMs = parseInt(process.env.LEIN_HOLD_INTERVAL_MS || '60000', 10);
-
-  const holdMessages = [
-    "Ainda estou trabalhando nisso, um momento...",
-    "Continuo aqui, só processando...",
-    "Já já volto, estou finalizando...",
-    "Um instante, quase pronto...",
-  ];
+    "Olá, aqui é a Lein. Como posso ajudar?";
 
   return {
     publicUrl,
@@ -118,129 +99,98 @@ export function loadServerConfig(publicUrl: string): ServerConfig {
     providerConfig,
     transcriptTimeoutMs,
     inboundGreeting,
-    holdIntervalMs,
-    holdMessages,
   };
 }
 
+// ─── CallManager ───
+
 export class CallManager {
   private activeCalls = new Map<string, CallState>();
-  private hungUpCalls = new Map<string, CallState>();  // Preserved after hangup for context
+  private hungUpCalls = new Map<string, CallState>();
   private callControlIdToCallId = new Map<string, string>();
-  private wsTokenToCallId = new Map<string, string>();  // For WebSocket auth
+  private wsTokenToCallId = new Map<string, string>();
   private httpServer: ReturnType<typeof createServer> | null = null;
   private wss: WebSocketServer | null = null;
   private config: ServerConfig;
   private currentCallId = 0;
-  private holdMessageIndex = 0;
   private onInboundCall?: (callId: string, from: string, transcript: string) => void;
 
   constructor(config: ServerConfig) {
     this.config = config;
   }
 
-  /**
-   * Set handler for inbound call notifications
-   * Called when an incoming call is answered, greeted, and user speaks
-   */
   setInboundCallHandler(handler: (callId: string, from: string, transcript: string) => void): void {
     this.onInboundCall = handler;
   }
 
-  /**
-   * Start keepalive timer for a call. Plays hold messages at intervals.
-   */
-  private startKeepalive(state: CallState): void {
-    if (this.config.holdIntervalMs <= 0) return;
-    this.stopKeepalive(state);
-
-    const scheduleNext = () => {
-      state.keepaliveTimer = setTimeout(async () => {
-        if (state.hungUp || !state.ws || state.ws.readyState !== WebSocket.OPEN) {
-          return;
-        }
-        // Skip this keepalive if audio is currently being sent (avoid overlap/cutting)
-        if (state.isSendingAudio) {
-          console.error(`[${state.callId}] Skipping keepalive (audio in progress)`);
-          if (!state.hungUp) scheduleNext();
-          return;
-        }
-        const msg = this.config.holdMessages[this.holdMessageIndex % this.config.holdMessages.length];
-        this.holdMessageIndex++;
-        try {
-          console.error(`[${state.callId}] Playing keepalive: "${msg}"`);
-          const audioData = await this.generateTTSAudio(msg);
-          await this.sendPreGeneratedAudio(state, audioData);
-        } catch (err) {
-          console.error(`[${state.callId}] Keepalive audio failed:`, err);
-        }
-        if (!state.hungUp) {
-          scheduleNext();
-        }
-      }, this.config.holdIntervalMs);
-    };
-    scheduleNext();
-  }
-
-  /**
-   * Stop keepalive timer for a call.
-   */
-  private stopKeepalive(state: CallState): void {
-    if (state.keepaliveTimer) {
-      clearTimeout(state.keepaliveTimer);
-      state.keepaliveTimer = null;
-    }
-  }
-
-  /**
-   * Reset keepalive timer (called when Claude sends audio).
-   */
   private getGreeting(): string {
     if (this.config.getInboundGreeting) {
       try {
         return this.config.getInboundGreeting();
-      } catch {
-        // Fallback to static greeting
-      }
+      } catch {}
     }
     return this.config.inboundGreeting;
   }
 
-  private resetKeepalive(state: CallState): void {
-    if (this.config.holdIntervalMs <= 0) return;
-    this.stopKeepalive(state);
-    this.startKeepalive(state);
+  // ─── ConversationRelay: send/receive text ───
+
+  private sendText(state: CallState, text: string): void {
+    if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
+      throw new Error('WebSocket not connected');
+    }
+    state.ws.send(JSON.stringify({ type: 'text', token: text, last: true }));
   }
 
-  /**
-   * Move call to hungUp state, preserving context for 5 minutes.
-   * Idempotent — safe to call multiple times for the same callId.
-   */
+  private waitForPrompt(state: CallState, timeoutMs?: number): Promise<string> {
+    if (state.hungUp) {
+      this.preserveHungUpCall(state.callId);
+      return Promise.reject(new Error('Call was hung up by user'));
+    }
+
+    return new Promise((resolve, reject) => {
+      state.pendingTranscript = { resolve, reject };
+
+      if (timeoutMs) {
+        setTimeout(() => {
+          if (state.pendingTranscript) {
+            state.pendingTranscript = null;
+            reject(new Error('Transcript timeout'));
+          }
+        }, timeoutMs);
+      }
+    });
+  }
+
+  private async speakAndListen(state: CallState, text: string): Promise<string> {
+    this.sendText(state, text);
+    return this.waitForPrompt(state, this.config.transcriptTimeoutMs);
+  }
+
+  // ─── Call state management ───
+
   private preserveHungUpCall(callId: string): void {
-    // Already preserved
     if (this.hungUpCalls.has(callId)) return;
     const state = this.activeCalls.get(callId);
     if (!state) return;
 
     state.hungUp = true;
     state.hungUpAt = Date.now();
-    this.stopKeepalive(state);
-    state.sttSession?.close();
-    state.sttSession = null;
     state.ws?.close();
     state.ws = null;
 
-    // Move to hungUpCalls for context preservation
+    if (state.pendingTranscript) {
+      state.pendingTranscript.reject(new Error('Call was hung up by user'));
+      state.pendingTranscript = null;
+    }
+
     this.hungUpCalls.set(callId, state);
     this.activeCalls.delete(callId);
 
-    // Clean up mappings
     this.wsTokenToCallId.delete(state.wsToken);
     if (state.callControlId) {
       this.callControlIdToCallId.delete(state.callControlId);
     }
 
-    // Auto-cleanup after 5 minutes
     setTimeout(() => {
       this.hungUpCalls.delete(callId);
       console.error(`[${callId}] Hung-up call context expired`);
@@ -249,13 +199,6 @@ export class CallManager {
     console.error(`[${callId}] Call preserved in hung-up state (context available for 5 min)`);
   }
 
-  /**
-   * Get call status and history (works for both active and hung-up calls).
-   */
-  /**
-   * Find an active call by the caller's phone number.
-   * Normalizes both numbers (strips + and non-digits) before comparing.
-   */
   getActiveCallByPhone(phone: string): { callId: string; state: CallState } | null {
     const normalized = phone.replace(/\D/g, '');
     for (const [callId, state] of this.activeCalls) {
@@ -267,10 +210,6 @@ export class CallManager {
     return null;
   }
 
-  /**
-   * Notify the active call that a WhatsApp message was received.
-   * Plays a short TTS message on the call to alert the user.
-   */
   async notifyWhatsAppMessage(callId: string, messageText: string): Promise<void> {
     const state = this.activeCalls.get(callId);
     if (!state || state.hungUp) return;
@@ -279,19 +218,13 @@ export class CallManager {
     const notification = `Recebi sua mensagem no WhatsApp: ${preview}`;
 
     try {
-      this.stopKeepalive(state);
-      const audioData = await this.generateTTSAudio(notification);
-      await this.sendPreGeneratedAudio(state, audioData);
+      this.sendText(state, notification);
       state.conversationHistory.push({ speaker: 'claude', message: `[WhatsApp notification] ${notification}` });
-      this.startKeepalive(state);
     } catch (err) {
       console.error(`[${callId}] Failed to notify WhatsApp message:`, err);
     }
   }
 
-  /**
-   * Check if there are any active (non-hung-up) calls.
-   */
   hasActiveCalls(): boolean {
     return this.activeCalls.size > 0;
   }
@@ -318,6 +251,8 @@ export class CallManager {
     return { status: 'not_found' };
   }
 
+  // ─── HTTP + WebSocket server ───
+
   startServer(): void {
     this.httpServer = createServer((req, res) => {
       const url = new URL(req.url!, `http://${req.headers.host}`);
@@ -338,7 +273,6 @@ export class CallManager {
         return;
       }
 
-      // WhatsApp webhook from Kapso
       if (url.pathname === '/kapso') {
         this.handleKapsoWebhook(req, res);
         return;
@@ -353,11 +287,9 @@ export class CallManager {
     this.httpServer.on('upgrade', (request: IncomingMessage, socket: any, head: Buffer) => {
       const url = new URL(request.url!, `http://${request.headers.host}`);
       if (url.pathname === '/media-stream') {
-        // Try to find the call ID from token
         const token = url.searchParams.get('token');
         let callId = token ? this.wsTokenToCallId.get(token) : null;
 
-        // Validate token if provided
         if (token && callId) {
           const state = this.activeCalls.get(callId);
           if (!state || !validateWebSocketToken(state.wsToken, token)) {
@@ -368,19 +300,15 @@ export class CallManager {
           }
           console.error(`[Security] WebSocket token validated for call ${callId}`);
         } else if (!callId) {
-          // Token missing or not found - only allow fallback for ngrok
+          // Fallback for ngrok compatibility
           const hostname = new URL(this.config.publicUrl).hostname;
           const isNgrok = hostname.endsWith('.ngrok-free.dev') || hostname.endsWith('.ngrok.app') || hostname.includes('ngrok');
           if (isNgrok) {
-            // Fallback: find the most recent active call (ngrok compatibility mode)
-            // Token lookup can fail due to timing issues with ngrok's free tier
             const activeCallIds = Array.from(this.activeCalls.keys());
             if (activeCallIds.length > 0) {
               callId = activeCallIds[activeCallIds.length - 1];
               console.error(`[WebSocket] Token not found, using fallback call ID: ${callId} (ngrok compatibility mode)`);
             } else {
-              // No active calls yet - create a placeholder and accept anyway
-              // The connection handler will associate it with the correct call
               callId = `pending-${Date.now()}`;
               console.error(`[WebSocket] No active calls, using placeholder: ${callId} (ngrok compatibility mode)`);
             }
@@ -392,7 +320,6 @@ export class CallManager {
           }
         }
 
-        // Accept WebSocket connection
         console.error(`[WebSocket] Accepting connection for: ${callId}`);
         this.wss!.handleUpgrade(request, socket, head, (ws) => {
           this.wss!.emit('connection', ws, request, callId);
@@ -402,50 +329,65 @@ export class CallManager {
       }
     });
 
+    // ConversationRelay WebSocket handler — receives/sends JSON text messages
     this.wss.on('connection', (ws: WebSocket, _request: IncomingMessage, callId: string) => {
-      console.error(`Media stream WebSocket connected for call ${callId}`);
+      console.error(`[${callId}] ConversationRelay WebSocket connected`);
 
-      // Associate the WebSocket with the call immediately (token already validated)
       const state = this.activeCalls.get(callId);
       if (state) {
         state.ws = ws;
       }
 
       ws.on('message', (message: Buffer | string) => {
-        const msgBuffer = Buffer.isBuffer(message) ? message : Buffer.from(message);
-
-        // Parse JSON messages from Twilio to capture streamSid and handle events
-        if (msgBuffer.length > 0 && msgBuffer[0] === 0x7b) {
-          try {
-            const msg = JSON.parse(msgBuffer.toString());
-            const msgState = this.activeCalls.get(callId);
-
-            // Capture streamSid from "start" event (required for sending audio back)
-            if (msg.event === 'start' && msg.streamSid && msgState) {
-              msgState.streamSid = msg.streamSid;
-              console.error(`[${callId}] Captured streamSid: ${msg.streamSid}`);
-            }
-
-            // Handle "stop" event when call ends
-            if (msg.event === 'stop' && msgState) {
-              console.error(`[${callId}] Stream stopped`);
-              msgState.hungUp = true;
-            }
-          } catch { }
+        const text = typeof message === 'string' ? message : message.toString();
+        let msg: any;
+        try {
+          msg = JSON.parse(text);
+        } catch {
+          return;
         }
 
-        // Forward audio to realtime transcription session
-        const audioState = this.activeCalls.get(callId);
-        if (audioState?.sttSession) {
-          const audioData = this.extractInboundAudio(msgBuffer);
-          if (audioData) {
-            audioState.sttSession.sendAudio(audioData);
-          }
+        const msgState = this.activeCalls.get(callId);
+        if (!msgState) return;
+
+        switch (msg.type) {
+          case 'setup':
+            msgState.relaySessionId = msg.sessionId;
+            console.error(`[${callId}] ConversationRelay setup: sessionId=${msg.sessionId}, from=${msg.from}, to=${msg.to}`);
+            break;
+
+          case 'prompt':
+            console.error(`[${callId}] User said: "${msg.voicePrompt}"`);
+            if (msgState.pendingTranscript) {
+              msgState.pendingTranscript.resolve(msg.voicePrompt);
+              msgState.pendingTranscript = null;
+            }
+            break;
+
+          case 'interrupt':
+            console.error(`[${callId}] User interrupted after: "${msg.utteranceUntilInterrupt}"`);
+            break;
+
+          case 'dtmf':
+            console.error(`[${callId}] DTMF: ${msg.digit}`);
+            break;
+
+          case 'error':
+            console.error(`[${callId}] ConversationRelay error: ${msg.description}`);
+            break;
         }
       });
 
       ws.on('close', () => {
-        console.error('Media stream WebSocket closed');
+        console.error(`[${callId}] ConversationRelay WebSocket closed`);
+        const closeState = this.activeCalls.get(callId);
+        if (closeState) {
+          closeState.hungUp = true;
+          if (closeState.pendingTranscript) {
+            closeState.pendingTranscript.reject(new Error('Call was hung up by user'));
+            closeState.pendingTranscript = null;
+          }
+        }
       });
     });
 
@@ -458,7 +400,7 @@ export class CallManager {
           try { process.kill(parseInt(pid), 'SIGTERM'); } catch {}
         }
         setTimeout(() => {
-          this.httpServer.listen(this.config.port, () => {
+          this.httpServer!.listen(this.config.port, () => {
             console.error(`HTTP server listening on port ${this.config.port}`);
           });
         }, 2000);
@@ -473,35 +415,11 @@ export class CallManager {
     });
   }
 
-  /**
-   * Extract INBOUND audio data from WebSocket message (filters out outbound/TTS audio)
-   */
-  private extractInboundAudio(msgBuffer: Buffer): Buffer | null {
-    if (msgBuffer.length === 0) return null;
-
-    // Binary audio (doesn't start with '{') - can't determine track, skip
-    if (msgBuffer[0] !== 0x7b) {
-      return null;
-    }
-
-    // JSON format - only extract inbound track (user's voice)
-    try {
-      const msg = JSON.parse(msgBuffer.toString());
-      if (msg.event === 'media' && msg.media?.payload) {
-        const track = msg.media?.track;
-        if (track === 'inbound' || track === 'inbound_track') {
-          return Buffer.from(msg.media.payload, 'base64');
-        }
-      }
-    } catch { }
-
-    return null;
-  }
+  // ─── Webhook handlers ───
 
   private handlePhoneWebhook(req: IncomingMessage, res: ServerResponse): void {
     const contentType = req.headers['content-type'] || '';
 
-    // Twilio sends form-urlencoded webhooks
     if (contentType.includes('application/x-www-form-urlencoded')) {
       let body = '';
       req.on('data', (chunk) => { body += chunk; });
@@ -509,31 +427,9 @@ export class CallManager {
         try {
           const params = new URLSearchParams(body);
 
-          // Validate Twilio signature
-          const authToken = this.config.providerConfig.phoneAuthToken;
-          const signature = req.headers['x-twilio-signature'] as string | undefined;
-          // Use the known public URL directly - reconstructing from headers fails with ngrok
-          // because ngrok doesn't preserve headers exactly as Twilio sends them
-          const webhookUrl = `${this.config.publicUrl}/twiml`;
-
-          // Skip Twilio signature validation - ngrok causes signature mismatches
+          // Skip Twilio signature validation for ngrok compatibility
           // TODO: Re-enable with proper URL handling
           console.error(`[Security] Skipping Twilio signature validation (publicUrl: ${this.config.publicUrl})`);
-          if (false && !validateTwilioSignature(authToken, signature, webhookUrl, params)) {
-            const hostname = new URL(this.config.publicUrl).hostname;
-            const isNgrok = hostname.includes('ngrok');
-            console.error(`[Security] publicUrl: ${this.config.publicUrl}, hostname: ${hostname}, isNgrok: ${isNgrok}`);
-            if (isNgrok) {
-              // Log for debugging but proceed anyway - ngrok causes signature mismatches
-              // due to header modifications and URL normalization
-              console.error('[Security] Twilio signature validation failed (proceeding anyway for ngrok compatibility)');
-            } else {
-              console.error('[Security] Rejecting Twilio webhook: invalid signature');
-              res.writeHead(401);
-              res.end('Invalid signature');
-              return;
-            }
-          }
 
           await this.handleTwilioWebhook(params, res);
         } catch (error) {
@@ -545,7 +441,6 @@ export class CallManager {
       return;
     }
 
-    // Fallback: Reject unknown content types
     console.error('[Security] Rejecting webhook with unknown content type:', contentType);
     res.writeHead(400);
     res.end('Invalid content type');
@@ -554,16 +449,15 @@ export class CallManager {
   private async handleTwilioWebhook(params: URLSearchParams, res: ServerResponse): Promise<void> {
     const callSid = params.get('CallSid');
     const callStatus = params.get('CallStatus');
-
     const errorCode = params.get('ErrorCode');
     const errorMessage = params.get('ErrorMessage');
     console.error(`Twilio webhook: CallSid=${callSid}, CallStatus=${callStatus}${errorCode ? `, Error=${errorCode}: ${errorMessage}` : ''}`);
 
-    // Handle inbound calls (no matching callId = incoming call)
+    // Handle inbound calls
     if (callSid && callStatus === 'ringing' && !this.callControlIdToCallId.has(callSid)) {
       const from = params.get('From') || 'unknown';
       console.error(`[Inbound] Incoming Twilio call from ${from}`);
-      this.handleInboundCallTwilio(callSid, from, params, res).catch(err => {
+      this.handleInboundCallTwilio(callSid, from, res).catch(err => {
         console.error('[Inbound] Failed to handle inbound call:', err);
       });
       return;
@@ -571,7 +465,6 @@ export class CallManager {
 
     // Handle call status updates
     if (callStatus === 'completed' || callStatus === 'busy' || callStatus === 'no-answer' || callStatus === 'failed') {
-      // Call ended - preserve state for context
       if (callSid) {
         const callId = this.callControlIdToCallId.get(callSid);
         if (callId) {
@@ -583,30 +476,27 @@ export class CallManager {
       return;
     }
 
-    // For 'in-progress' or 'ringing' status, return TwiML to start media stream
-    // Include security token in the stream URL
-    let streamUrl = `wss://${new URL(this.config.publicUrl).host}/media-stream`;
+    // For 'in-progress' or 'ringing' (outbound) — return TwiML with ConversationRelay
+    let wsUrl = `wss://${new URL(this.config.publicUrl).host}/media-stream`;
 
-    // Find the call state to get the WebSocket token
     if (callSid) {
       const callId = this.callControlIdToCallId.get(callSid);
       if (callId) {
         const state = this.activeCalls.get(callId);
         if (state) {
-          streamUrl += `?token=${encodeURIComponent(state.wsToken)}`;
+          wsUrl += `?token=${encodeURIComponent(state.wsToken)}`;
         }
       }
     }
 
     const statusCallbackUrl = `${this.config.publicUrl}/stream-status`;
-    const xml = this.config.providers.phone.getStreamConnectXml(streamUrl, statusCallbackUrl);
-    console.error(`[TwiML] Returning stream connect XML with URL: ${streamUrl}`);
+    const xml = this.config.providers.phone.getConnectXml(wsUrl, { statusCallbackUrl });
+    console.error(`[TwiML] Returning ConversationRelay XML with URL: ${wsUrl}`);
     res.writeHead(200, { 'Content-Type': 'application/xml' });
     res.end(xml);
   }
 
   private handleKapsoWebhook(req: IncomingMessage, res: ServerResponse): void {
-    // GET = webhook verification (Meta challenge)
     if (req.method === 'GET') {
       const url = new URL(req.url!, `http://${req.headers.host}`);
       const mode = url.searchParams.get('hub.mode');
@@ -621,7 +511,6 @@ export class CallManager {
       return;
     }
 
-    // POST = incoming webhook event
     let body = '';
     req.on('data', (chunk) => { body += chunk; });
     req.on('end', async () => {
@@ -630,7 +519,6 @@ export class CallManager {
 
       try {
         const data = JSON.parse(body);
-        // Dynamic import to avoid circular deps
         const { handleWebhook } = await import('./whatsapp.js');
         await handleWebhook(data);
       } catch (err) {
@@ -650,8 +538,6 @@ export class CallManager {
         const errorCode = params.get('ErrorCode');
         const errorMessage = params.get('ErrorMessage');
         console.error(`[StreamStatus] StreamSid=${streamSid}, Status=${streamStatus}${errorCode ? `, Error=${errorCode}: ${errorMessage}` : ''}`);
-        // Log all params for debugging
-        console.error(`[StreamStatus] All params: ${body}`);
       } catch (error) {
         console.error('[StreamStatus] Error parsing:', error);
       }
@@ -660,16 +546,11 @@ export class CallManager {
     });
   }
 
-  /**
-   * Handle an incoming Twilio call - return TwiML to answer and stream
-   */
-  private async handleInboundCallTwilio(callSid: string, from: string, params: URLSearchParams, res: ServerResponse): Promise<void> {
+  // ─── Inbound call handling ───
+
+  private async handleInboundCallTwilio(callSid: string, from: string, res: ServerResponse): Promise<void> {
     const callId = `inbound-${++this.currentCallId}-${Date.now()}`;
-
     console.error(`[${callId}] Setting up inbound Twilio call from ${from}`);
-
-    const sttSession = this.config.providers.stt.createSession();
-    await sttSession.connect();
 
     const wsToken = generateWebSocketToken();
 
@@ -678,69 +559,51 @@ export class CallManager {
       callControlId: callSid,
       userPhoneNumber: from,
       ws: null,
-      streamSid: null,
-      streamingReady: false,
       wsToken,
       conversationHistory: [],
       startTime: Date.now(),
       hungUp: false,
-      sttSession,
       isInbound: true,
+      pendingTranscript: null,
     };
 
     this.activeCalls.set(callId, state);
     this.callControlIdToCallId.set(callSid, callId);
     this.wsTokenToCallId.set(wsToken, callId);
 
-    // Return TwiML to answer and start media stream
-    let streamUrl = `wss://${new URL(this.config.publicUrl).host}/media-stream`;
-    streamUrl += `?token=${encodeURIComponent(wsToken)}`;
+    // Return TwiML with ConversationRelay — greeting handled by welcomeGreeting attribute
+    let wsUrl = `wss://${new URL(this.config.publicUrl).host}/media-stream`;
+    wsUrl += `?token=${encodeURIComponent(wsToken)}`;
     const statusCallbackUrl = `${this.config.publicUrl}/stream-status`;
-    const xml = this.config.providers.phone.getStreamConnectXml(streamUrl, statusCallbackUrl);
+    const greeting = this.getGreeting();
+
+    const xml = this.config.providers.phone.getConnectXml(wsUrl, {
+      welcomeGreeting: greeting,
+      statusCallbackUrl,
+    });
     res.writeHead(200, { 'Content-Type': 'application/xml' });
     res.end(xml);
 
-    // Wait for WebSocket connection then greet
+    // Wait for WebSocket + first user prompt
     try {
       await this.waitForConnection(callId, 15000);
+      if (state.hungUp) { this.cleanupCall(callId); return; }
 
-      if (state.hungUp) {
-        this.cleanupCall(callId);
-        return;
-      }
-
-      const audioData = await this.generateTTSAudio(this.getGreeting());
-      await this.sendPreGeneratedAudio(state, audioData);
-
-      if (state.hungUp) {
-        this.cleanupCall(callId);
-        return;
-      }
-
-      const transcript = await this.listenWithTimeout(state, 30000);
-      state.conversationHistory.push({ speaker: 'claude', message: this.getGreeting() });
+      const transcript = await this.waitForPrompt(state, 30000);
+      state.conversationHistory.push({ speaker: 'claude', message: greeting });
       state.conversationHistory.push({ speaker: 'user', message: transcript });
 
       console.error(`[${callId}] User said: ${transcript}`);
-
       this.writePendingInboundCall(callId, from, transcript);
       this.onInboundCall?.(callId, from, transcript);
 
-      const holdMessage = "Um momento, por favor. Estou conectando voce ao Claude.";
-      const holdAudio = await this.generateTTSAudio(holdMessage);
-      await this.sendPreGeneratedAudio(state, holdAudio);
-
-      // Start keepalive so user hears periodic updates while waiting
-      this.startKeepalive(state);
+      this.sendText(state, "Um momento, por favor. Estou conectando você ao Claude.");
     } catch (error) {
-      console.error(`[${callId}] Inbound Twilio call error:`, error instanceof Error ? error.message : error);
+      console.error(`[${callId}] Inbound call error:`, error instanceof Error ? error.message : error);
       try { await this.hangUpCall(callId); } catch {}
     }
   }
 
-  /**
-   * Write pending inbound call info to temp file for hooks to detect
-   */
   private writePendingInboundCall(callId: string, from: string, transcript: string): void {
     try {
       const fs = require('fs');
@@ -752,38 +615,9 @@ export class CallManager {
     }
   }
 
-  /**
-   * Listen with a specific timeout (used for inbound calls)
-   */
-  private async listenWithTimeout(state: CallState, timeoutMs: number): Promise<string> {
-    if (!state.sttSession) {
-      if (state.hungUp) {
-        this.preserveHungUpCall(state.callId);
-        throw new Error('Call was hung up by user');
-      }
-      throw new Error('STT session not available');
-    }
-
-    const transcript = await Promise.race([
-      state.sttSession.waitForTranscript(timeoutMs),
-      this.waitForHangup(state),
-    ]);
-
-    if (state.hungUp) {
-      throw new Error('Call was hung up by user');
-    }
-
-    return transcript;
-  }
-
-  /**
-   * Clean up call state and mappings
-   */
   private cleanupCall(callId: string): void {
     const state = this.activeCalls.get(callId);
     if (state) {
-      this.stopKeepalive(state);
-      state.sttSession?.close();
       state.ws?.close();
       this.wsTokenToCallId.delete(state.wsToken);
       if (state.callControlId) {
@@ -793,14 +627,10 @@ export class CallManager {
     }
   }
 
-  /**
-   * Hang up a call and clean up
-   */
   private async hangUpCall(callId: string): Promise<void> {
     const state = this.activeCalls.get(callId);
     if (!state) return;
 
-    this.stopKeepalive(state);
     if (state.callControlId) {
       await this.config.providers.phone.hangup(state.callControlId);
     }
@@ -808,18 +638,11 @@ export class CallManager {
     this.cleanupCall(callId);
   }
 
+  // ─── Public API (used by MCP tools / HTTP API) ───
+
   async initiateCall(message: string): Promise<{ callId: string; response: string }> {
     const callId = `call-${++this.currentCallId}-${Date.now()}`;
-
-    // Read phone number dynamically from .env file (allows changing without restart)
     const userPhoneNumber = readEnvFile('LEIN_USER_PHONE_NUMBER') || this.config.userPhoneNumber;
-
-    // Create realtime transcription session via provider
-    const sttSession = this.config.providers.stt.createSession();
-    await sttSession.connect();
-    console.error(`[${callId}] STT session connected`);
-
-    // Generate secure token for WebSocket authentication
     const wsToken = generateWebSocketToken();
 
     const state: CallState = {
@@ -827,13 +650,11 @@ export class CallManager {
       callControlId: null,
       userPhoneNumber,
       ws: null,
-      streamSid: null,
-      streamingReady: false,
       wsToken,
       conversationHistory: [],
       startTime: Date.now(),
       hungUp: false,
-      sttSession,
+      pendingTranscript: null,
     };
 
     this.activeCalls.set(callId, state);
@@ -851,26 +672,16 @@ export class CallManager {
 
       console.error(`Call initiated: ${callControlId} -> ${userPhoneNumber}`);
 
-      // Start TTS generation in parallel with waiting for connection
-      // This reduces latency by generating audio while Twilio establishes the stream
-      const ttsPromise = this.generateTTSAudio(message);
-
       await this.waitForConnection(callId, 45000);
 
-      // Send the pre-generated audio and listen for response
-      const audioData = await ttsPromise;
-      await this.sendPreGeneratedAudio(state, audioData);
-      const response = await this.listen(state);
+      // Send message via ConversationRelay (Twilio handles TTS)
+      this.sendText(state, message);
+      const response = await this.waitForPrompt(state, this.config.transcriptTimeoutMs);
       state.conversationHistory.push({ speaker: 'claude', message });
       state.conversationHistory.push({ speaker: 'user', message: response });
 
-      // Start keepalive timer (will play hold messages if Claude takes long to respond)
-      this.startKeepalive(state);
-
       return { callId, response };
     } catch (error) {
-      this.stopKeepalive(state);
-      state.sttSession?.close();
       this.activeCalls.delete(callId);
       throw error;
     }
@@ -879,7 +690,6 @@ export class CallManager {
   async continueCall(callId: string, message: string): Promise<string | { hungUp: true; conversationHistory: Array<{ speaker: string; message: string }>; durationSeconds: number }> {
     const state = this.activeCalls.get(callId);
 
-    // Check if call was hung up — return context instead of error
     if (!state) {
       const hungUp = this.hungUpCalls.get(callId);
       if (hungUp) {
@@ -892,15 +702,9 @@ export class CallManager {
       throw new Error(`No active call: ${callId}`);
     }
 
-    // Reset keepalive since Claude is actively communicating
-    this.resetKeepalive(state);
-
     const response = await this.speakAndListen(state, message);
     state.conversationHistory.push({ speaker: 'claude', message });
     state.conversationHistory.push({ speaker: 'user', message: response });
-
-    // Restart keepalive after getting response (Claude will process)
-    this.startKeepalive(state);
 
     return response;
   }
@@ -908,7 +712,6 @@ export class CallManager {
   async speakOnly(callId: string, message: string): Promise<{ hungUp: true; conversationHistory: Array<{ speaker: string; message: string }>; durationSeconds: number } | void> {
     const state = this.activeCalls.get(callId);
 
-    // Check if call was hung up — return context instead of error
     if (!state) {
       const hungUp = this.hungUpCalls.get(callId);
       if (hungUp) {
@@ -921,20 +724,13 @@ export class CallManager {
       throw new Error(`No active call: ${callId}`);
     }
 
-    // Reset keepalive since Claude is actively communicating
-    this.resetKeepalive(state);
-
-    await this.speak(state, message);
+    this.sendText(state, message);
     state.conversationHistory.push({ speaker: 'claude', message });
-
-    // Restart keepalive
-    this.startKeepalive(state);
   }
 
   async endCall(callId: string, message: string): Promise<{ durationSeconds: number; conversationHistory?: Array<{ speaker: string; message: string }> }> {
     const state = this.activeCalls.get(callId);
 
-    // If call was already hung up, return its preserved context
     if (!state) {
       const hungUp = this.hungUpCalls.get(callId);
       if (hungUp) {
@@ -945,24 +741,25 @@ export class CallManager {
       throw new Error(`No active call: ${callId}`);
     }
 
-    this.stopKeepalive(state);
+    // Send farewell message
+    this.sendText(state, message);
 
-    await this.speak(state, message);
+    // Wait for TTS to finish playing before hanging up
+    await new Promise(r => setTimeout(r, 3000));
 
-    // Wait for audio to finish playing before hanging up (prevent cutoff)
-    await new Promise((resolve) => setTimeout(resolve, 2000));
+    // End ConversationRelay session
+    if (state.ws?.readyState === WebSocket.OPEN) {
+      state.ws.send(JSON.stringify({ type: 'end' }));
+    }
 
-    // Hang up the call via phone provider
+    // Hang up via Twilio API
     if (state.callControlId) {
       await this.config.providers.phone.hangup(state.callControlId);
     }
 
-    // Close sessions and clean up mappings
-    state.sttSession?.close();
     state.ws?.close();
     state.hungUp = true;
 
-    // Clean up security token mapping
     this.wsTokenToCallId.delete(state.wsToken);
     if (state.callControlId) {
       this.callControlIdToCallId.delete(state.callControlId);
@@ -978,248 +775,12 @@ export class CallManager {
     const startTime = Date.now();
     while (Date.now() - startTime < timeout) {
       const state = this.activeCalls.get(callId);
-      // Wait for WebSocket AND streaming to be ready:
-      // Twilio: streamSid is set from "start" WebSocket event
-      const wsReady = state?.ws && state.ws.readyState === WebSocket.OPEN;
-      const streamReady = state?.streamSid;
-      if (wsReady && streamReady) {
+      if (state?.ws && state.ws.readyState === WebSocket.OPEN) {
         return;
       }
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      await new Promise(r => setTimeout(r, 100));
     }
     throw new Error('WebSocket connection timeout');
-  }
-
-  /**
-   * Pre-generate TTS audio (can run in parallel with connection setup)
-   * Returns mu-law encoded audio ready to send to Twilio
-   */
-  private async generateTTSAudio(text: string): Promise<Buffer> {
-    console.error(`[TTS] Generating audio for: ${text.substring(0, 50)}...`);
-    const tts = this.config.providers.tts;
-    const pcmData = await tts.synthesize(text);
-    const resampledPcm = this.resample24kTo8k(pcmData);
-    const muLawData = this.pcmToMuLaw(resampledPcm);
-    console.error(`[TTS] Audio generated: ${muLawData.length} bytes`);
-    return muLawData;
-  }
-
-  /**
-   * Send a single audio chunk to the phone via WebSocket
-   */
-  private sendMediaChunk(state: CallState, audioData: Buffer): void {
-    if (state.ws?.readyState !== WebSocket.OPEN) return;
-    const message: Record<string, unknown> = {
-      event: 'media',
-      media: { payload: audioData.toString('base64') },
-    };
-    if (state.streamSid) {
-      message.streamSid = state.streamSid;
-    }
-    state.ws.send(JSON.stringify(message));
-  }
-
-  private async sendPreGeneratedAudio(state: CallState, muLawData: Buffer): Promise<void> {
-    state.isSendingAudio = true;
-    try {
-      console.error(`[${state.callId}] Sending pre-generated audio...`);
-      const chunkSize = 160;  // 20ms at 8kHz
-      for (let i = 0; i < muLawData.length; i += chunkSize) {
-        this.sendMediaChunk(state, muLawData.subarray(i, i + chunkSize));
-        await new Promise((resolve) => setTimeout(resolve, 20));
-      }
-      // Small delay to ensure audio finishes playing before listening
-      await new Promise((resolve) => setTimeout(resolve, 200));
-      console.error(`[${state.callId}] Audio sent`);
-    } finally {
-      state.isSendingAudio = false;
-    }
-  }
-
-  private async speakAndListen(state: CallState, text: string): Promise<string> {
-    await this.speak(state, text);
-    return await this.listen(state);
-  }
-
-  private async speak(state: CallState, text: string): Promise<void> {
-    console.error(`[${state.callId}] Speaking: ${text.substring(0, 50)}...`);
-    state.isSendingAudio = true;
-    try {
-      const tts = this.config.providers.tts;
-
-      // Use streaming if available for lower latency
-      if (tts.synthesizeStream) {
-        await this.speakStreaming(state, text, tts.synthesizeStream.bind(tts));
-      } else {
-        const pcmData = await tts.synthesize(text);
-        await this.sendAudio(state, pcmData);
-      }
-
-      await new Promise((resolve) => setTimeout(resolve, 150));
-      console.error(`[${state.callId}] Speaking done`);
-    } finally {
-      state.isSendingAudio = false;
-    }
-  }
-
-  private async speakStreaming(
-    state: CallState,
-    text: string,
-    synthesizeStream: (text: string) => AsyncGenerator<Buffer>
-  ): Promise<void> {
-    let pendingPcm = Buffer.alloc(0);
-    let pendingMuLaw = Buffer.alloc(0);
-    const OUTPUT_CHUNK_SIZE = 160; // 20ms at 8kHz
-    const SAMPLES_PER_RESAMPLE = 6; // 6 bytes (3 samples) at 24kHz -> 1 sample at 8kHz
-
-    // Jitter buffer: accumulate audio before starting playback to smooth out
-    // timing variations from network latency and burst delivery patterns
-    const JITTER_BUFFER_MS = 100; // Buffer 100ms of audio before starting
-    // 8000 samples/sec ÷ 1000 ms/sec = 8 samples per ms; mu-law is 1 byte per sample
-    const JITTER_BUFFER_SIZE = (8000 / 1000) * JITTER_BUFFER_MS; // 800 bytes at 8kHz mu-law
-    let playbackStarted = false;
-
-    // Helper to drain and send buffered mu-law audio in chunks
-    const drainBuffer = async () => {
-      while (pendingMuLaw.length >= OUTPUT_CHUNK_SIZE) {
-        this.sendMediaChunk(state, pendingMuLaw.subarray(0, OUTPUT_CHUNK_SIZE));
-        pendingMuLaw = pendingMuLaw.subarray(OUTPUT_CHUNK_SIZE);
-        await new Promise((resolve) => setTimeout(resolve, 20));
-      }
-    };
-
-    for await (const chunk of synthesizeStream(text)) {
-      pendingPcm = Buffer.concat([pendingPcm, chunk]);
-
-      const completeUnits = Math.floor(pendingPcm.length / SAMPLES_PER_RESAMPLE);
-      if (completeUnits > 0) {
-        const bytesToProcess = completeUnits * SAMPLES_PER_RESAMPLE;
-        const toProcess = pendingPcm.subarray(0, bytesToProcess);
-        pendingPcm = pendingPcm.subarray(bytesToProcess);
-
-        const resampled = this.resample24kTo8k(toProcess);
-        const muLaw = this.pcmToMuLaw(resampled);
-        pendingMuLaw = Buffer.concat([pendingMuLaw, muLaw]);
-
-        // Wait for jitter buffer to fill before starting playback
-        if (!playbackStarted && pendingMuLaw.length < JITTER_BUFFER_SIZE) {
-          continue;
-        }
-        playbackStarted = true;
-
-        await drainBuffer();
-      }
-    }
-
-    // Send remaining audio (including any buffered audio for short messages)
-    await drainBuffer();
-
-    // Send any final partial chunk
-    if (pendingMuLaw.length > 0) {
-      this.sendMediaChunk(state, pendingMuLaw);
-    }
-  }
-
-  private async sendAudio(state: CallState, pcmData: Buffer): Promise<void> {
-    const resampledPcm = this.resample24kTo8k(pcmData);
-    const muLawData = this.pcmToMuLaw(resampledPcm);
-
-    const chunkSize = 160;
-    for (let i = 0; i < muLawData.length; i += chunkSize) {
-      this.sendMediaChunk(state, muLawData.subarray(i, i + chunkSize));
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
-  }
-
-  private async listen(state: CallState): Promise<string> {
-    console.error(`[${state.callId}] Listening...`);
-
-    if (!state.sttSession) {
-      if (state.hungUp) {
-        this.preserveHungUpCall(state.callId);
-        throw new Error('Call was hung up by user');
-      }
-      throw new Error('STT session not available');
-    }
-
-    // Race between getting a transcript and detecting hangup
-    const transcript = await Promise.race([
-      state.sttSession.waitForTranscript(this.config.transcriptTimeoutMs),
-      this.waitForHangup(state),
-    ]);
-
-    if (state.hungUp) {
-      // Preserve the call state before throwing
-      this.preserveHungUpCall(state.callId);
-      throw new Error('Call was hung up by user');
-    }
-
-    console.error(`[${state.callId}] User said: ${transcript}`);
-    return transcript;
-  }
-
-  /**
-   * Returns a promise that rejects when the call is hung up.
-   * Used to race against transcript waiting.
-   */
-  private waitForHangup(state: CallState): Promise<never> {
-    return new Promise((_, reject) => {
-      const checkInterval = setInterval(() => {
-        if (state.hungUp) {
-          clearInterval(checkInterval);
-          reject(new Error('Call was hung up by user'));
-        }
-      }, 100);  // Check every 100ms
-
-      // Clean up interval after transcript timeout to avoid memory leaks
-      setTimeout(() => {
-        clearInterval(checkInterval);
-      }, this.config.transcriptTimeoutMs + 1000);
-    });
-  }
-
-  private resample24kTo8k(pcmData: Buffer): Buffer {
-    const inputSamples = pcmData.length / 2;
-    const outputSamples = Math.floor(inputSamples / 3);
-    const output = Buffer.alloc(outputSamples * 2);
-
-    for (let i = 0; i < outputSamples; i++) {
-      // Use linear interpolation instead of point-sampling to reduce artifacts
-      // For each output sample, average the 3 surrounding input samples
-      // This acts as a simple anti-aliasing low-pass filter
-      const baseIdx = i * 3;
-      const s0 = pcmData.readInt16LE(baseIdx * 2);
-      const s1 = baseIdx + 1 < inputSamples ? pcmData.readInt16LE((baseIdx + 1) * 2) : s0;
-      const s2 = baseIdx + 2 < inputSamples ? pcmData.readInt16LE((baseIdx + 2) * 2) : s1;
-      const interpolated = Math.round((s0 + s1 + s2) / 3);
-      output.writeInt16LE(interpolated, i * 2);
-    }
-
-    return output;
-  }
-
-  private pcmToMuLaw(pcmData: Buffer): Buffer {
-    const muLawData = Buffer.alloc(Math.floor(pcmData.length / 2));
-    for (let i = 0; i < muLawData.length; i++) {
-      const pcm = pcmData.readInt16LE(i * 2);
-      muLawData[i] = this.pcmToMuLawSample(pcm);
-    }
-    return muLawData;
-  }
-
-  private pcmToMuLawSample(pcm: number): number {
-    const BIAS = 0x84;
-    const CLIP = 32635;
-    let sign = (pcm >> 8) & 0x80;
-    if (sign) pcm = -pcm;
-    if (pcm > CLIP) pcm = CLIP;
-    pcm += BIAS;
-    let exponent = 7;
-    for (let expMask = 0x4000; (pcm & expMask) === 0 && exponent > 0; exponent--) {
-      expMask >>= 1;
-    }
-    const mantissa = (pcm >> (exponent + 3)) & 0x0f;
-    return (~(sign | (exponent << 4) | mantissa)) & 0xff;
   }
 
   getHttpServer() {
@@ -1227,9 +788,6 @@ export class CallManager {
   }
 
   shutdown(): void {
-    for (const [_, state] of this.activeCalls) {
-      this.stopKeepalive(state);
-    }
     for (const callId of this.activeCalls.keys()) {
       this.endCall(callId, 'Goodbye!').catch(console.error);
     }
