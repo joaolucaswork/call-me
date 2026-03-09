@@ -28,6 +28,7 @@ import {
   onNewMessage,
   parseMessagePrefix,
 } from './whatsapp.js';
+import { addMemory, searchMemory, getMemories, deleteMemory, isMem0Configured } from './mem0.js';
 
 // Store call manager globally for API access
 let callManager: CallManager | null = null;
@@ -329,6 +330,44 @@ async function main() {
           case '/api/whatsapp/get_session':
             result = { session: whatsappGetSession(data.peer_id) };
             break;
+          // Memory API routes (Mem0)
+          case '/api/memory/remember': {
+            if (!isMem0Configured()) {
+              res.writeHead(500, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'MEM0_API_KEY not configured' }));
+              return;
+            }
+            result = await addMemory(data.text, data.project);
+            break;
+          }
+          case '/api/memory/recall': {
+            if (!isMem0Configured()) {
+              res.writeHead(500, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'MEM0_API_KEY not configured' }));
+              return;
+            }
+            result = await searchMemory(data.query, data.project, data.limit);
+            break;
+          }
+          case '/api/memory/list': {
+            if (!isMem0Configured()) {
+              res.writeHead(500, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'MEM0_API_KEY not configured' }));
+              return;
+            }
+            result = await getMemories(data.project, data.limit);
+            break;
+          }
+          case '/api/memory/forget': {
+            if (!isMem0Configured()) {
+              res.writeHead(500, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'MEM0_API_KEY not configured' }));
+              return;
+            }
+            await deleteMemory(data.memory_id);
+            result = { success: true };
+            break;
+          }
           default:
             res.writeHead(404);
             res.end('Not found');
