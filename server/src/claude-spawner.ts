@@ -163,7 +163,7 @@ export function spawnClaudeForWhatsApp(msg: WhatsAppMessage): boolean {
   try {
     const child = spawn(CLAUDE_BIN, [
       '--dangerously-skip-permissions',
-      '--print',
+      '-p',
       prompt,
     ], {
       cwd: project.path,
