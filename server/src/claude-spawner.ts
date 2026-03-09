@@ -158,6 +158,10 @@ export function spawnClaudeForWhatsApp(msg: WhatsAppMessage): boolean {
     `5. Use read_whatsapp periodically to check for new messages`,
     `6. Keep monitoring for new WhatsApp messages and respond to each one`,
     `7. You can also use phone calls (initiate_call) if voice communication is better`,
+    `8. IMPORTANT: Send intermediate status updates via WhatsApp every 2-3 minutes during long tasks`,
+    `   - "Analisando o codigo..." / "Encontrei o problema..." / "Corrigindo..." / "Commit feito: ..."`,
+    `   - Keep updates SHORT (1 sentence). The user cannot watch the computer screen.`,
+    `   - Always send a final summary when done: "Pronto! [what was done]"`,
   ].join('\n');
 
   try {

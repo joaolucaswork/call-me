@@ -32,7 +32,9 @@
         "CALLME_STT_SILENCE_DURATION_MS": "${CALLME_STT_SILENCE_DURATION_MS:-600}",
         "CALLME_STT_VAD_THRESHOLD": "${CALLME_STT_VAD_THRESHOLD:-0.2}",
         "CALLME_INBOUND_GREETING": "${CALLME_INBOUND_GREETING:-Olá, aqui é o Claude. Como posso ajudar?}",
-        "CALLME_HOLD_INTERVAL_MS": "${CALLME_HOLD_INTERVAL_MS:-15000}"
+        "CALLME_HOLD_INTERVAL_MS": "${CALLME_HOLD_INTERVAL_MS:-15000}",
+        "CALLME_KAPSO_API_KEY": "${CALLME_KAPSO_API_KEY}",
+        "CALLME_KAPSO_PHONE_NUMBER_ID": "${CALLME_KAPSO_PHONE_NUMBER_ID}"
       }
     }
   },
@@ -43,6 +45,10 @@
           {
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/hooks/inbound-call-hook.sh"
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/whatsapp-status-hook.sh"
           }
         ]
       }
