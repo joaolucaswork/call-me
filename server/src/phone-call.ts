@@ -34,6 +34,7 @@ interface CallState {
   isInbound?: boolean;  // True for incoming calls
   keepaliveTimer?: ReturnType<typeof setTimeout> | null;  // Holdmusic keepalive timer
   isSendingAudio?: boolean;  // True while audio is being sent (prevents keepalive overlap)
+  isPlayingKeepalive?: boolean;  // True while keepalive TTS is being generated/sent
 }
 
 export interface ServerConfig {
@@ -291,6 +292,12 @@ export class CallManager {
 
       if (url.pathname === '/stream-status') {
         this.handleStreamStatus(req, res);
+        return;
+      }
+
+      // WhatsApp webhook from Kapso
+      if (url.pathname === '/kapso') {
+        this.handleKapsoWebhook(req, res);
         return;
       }
 
@@ -586,6 +593,40 @@ export class CallManager {
     console.error(`[TwiML] Returning stream connect XML with URL: ${streamUrl}`);
     res.writeHead(200, { 'Content-Type': 'application/xml' });
     res.end(xml);
+  }
+
+  private handleKapsoWebhook(req: IncomingMessage, res: ServerResponse): void {
+    // GET = webhook verification (Meta challenge)
+    if (req.method === 'GET') {
+      const url = new URL(req.url!, `http://${req.headers.host}`);
+      const mode = url.searchParams.get('hub.mode');
+      const challenge = url.searchParams.get('hub.challenge');
+      if (mode === 'subscribe' && challenge) {
+        res.writeHead(200, { 'Content-Type': 'text/plain' });
+        res.end(challenge);
+        return;
+      }
+      res.writeHead(200);
+      res.end('ok');
+      return;
+    }
+
+    // POST = incoming webhook event
+    let body = '';
+    req.on('data', (chunk) => { body += chunk; });
+    req.on('end', async () => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ status: 'ok' }));
+
+      try {
+        const data = JSON.parse(body);
+        // Dynamic import to avoid circular deps
+        const { handleWebhook } = await import('./whatsapp.js');
+        await handleWebhook(data);
+      } catch (err) {
+        console.error('[Kapso] Webhook error:', err);
+      }
+    });
   }
 
   private handleStreamStatus(req: IncomingMessage, res: ServerResponse): void {

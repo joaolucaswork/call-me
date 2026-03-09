@@ -215,6 +215,34 @@ async function main() {
             required: ['call_id'],
           },
         },
+        // WhatsApp tools
+        {
+          name: 'send_whatsapp',
+          description: 'Send a WhatsApp message to the user. Supports text, images, audio, and documents. Use for async communication — status updates, sharing files, sending screenshots, etc. For text messages, just provide the message. For media, provide the URL.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              message: { type: 'string', description: 'Text message to send (for text type)' },
+              type: { type: 'string', enum: ['text', 'image', 'audio', 'document'], description: 'Message type. Default: text' },
+              media_url: { type: 'string', description: 'URL of the media to send (for image/audio/document types)' },
+              caption: { type: 'string', description: 'Caption for image or document' },
+              filename: { type: 'string', description: 'Filename for document type' },
+              to: { type: 'string', description: 'Phone number to send to. Default: user phone number from config' },
+            },
+            required: ['message'],
+          },
+        },
+        {
+          name: 'read_whatsapp',
+          description: 'Read recent WhatsApp messages received from the user. Returns messages with text, transcribed audio, and media file paths. Audio messages are automatically transcribed. Image paths can be read with the Read tool to view them.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              limit: { type: 'number', description: 'Max messages to return (default 20)' },
+              since_timestamp: { type: 'number', description: 'Only return messages after this Unix timestamp (ms)' },
+            },
+          },
+        },
       ],
     };
   });
@@ -307,6 +335,63 @@ async function main() {
         return {
           content: [{ type: 'text', text: `Call not found: ${call_id}` }],
         };
+      }
+
+      if (request.params.name === 'send_whatsapp') {
+        const args = request.params.arguments as {
+          message: string;
+          type?: string;
+          media_url?: string;
+          caption?: string;
+          filename?: string;
+          to?: string;
+        };
+        const to = args.to || ''; // Empty = use default from config
+        const msgType = args.type || 'text';
+
+        let result: any;
+        switch (msgType) {
+          case 'image':
+            result = await apiCall('/whatsapp/send_image', { to, image_url: args.media_url, caption: args.caption || args.message });
+            break;
+          case 'audio':
+            result = await apiCall('/whatsapp/send_audio', { to, audio_url: args.media_url });
+            break;
+          case 'document':
+            result = await apiCall('/whatsapp/send_document', { to, document_url: args.media_url, filename: args.filename, caption: args.caption || args.message });
+            break;
+          default:
+            result = await apiCall('/whatsapp/send_text', { to, message: args.message });
+        }
+
+        const r = result as { success: boolean; messageId?: string; error?: string };
+        if (r.success) {
+          return { content: [{ type: 'text', text: `WhatsApp message sent (${msgType}). ID: ${r.messageId}` }] };
+        }
+        return { content: [{ type: 'text', text: `Failed to send WhatsApp: ${r.error}` }], isError: true };
+      }
+
+      if (request.params.name === 'read_whatsapp') {
+        const args = request.params.arguments as { limit?: number; since_timestamp?: number } || {};
+        const result = await apiCall('/whatsapp/read_messages', {
+          limit: args.limit || 20,
+          since_timestamp: args.since_timestamp,
+        }) as { messages: Array<any> };
+
+        if (!result.messages || result.messages.length === 0) {
+          return { content: [{ type: 'text', text: 'No WhatsApp messages received yet.' }] };
+        }
+
+        const formatted = result.messages.map((m: any) => {
+          let line = `[${new Date(m.timestamp).toLocaleString('pt-BR')}] ${m.from} (${m.type})`;
+          if (m.text) line += `: ${m.text}`;
+          if (m.transcript) line += ` [transcribed: "${m.transcript}"]`;
+          if (m.caption) line += ` [caption: "${m.caption}"]`;
+          if (m.mediaLocalPath) line += ` [file: ${m.mediaLocalPath}]`;
+          return line;
+        }).join('\n');
+
+        return { content: [{ type: 'text', text: `${result.messages.length} WhatsApp message(s):\n\n${formatted}` }] };
       }
 
       throw new Error(`Unknown tool: ${request.params.name}`);

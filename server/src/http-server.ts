@@ -13,6 +13,16 @@ import { createServer } from 'http';
 import { writeSession, completeSession, cleanupAllSessions, type InboundSession } from './session-manager.js';
 import { spawnClaudeForCall, hasActiveSpawn } from './claude-spawner.js';
 import { findMostRecentProject, formatProjectSummary } from './project-scanner.js';
+import {
+  handleWebhook as handleWhatsAppWebhook,
+  sendText as whatsappSendText,
+  sendImage as whatsappSendImage,
+  sendAudio as whatsappSendAudio,
+  sendDocument as whatsappSendDocument,
+  getMessages as whatsappGetMessages,
+  isWhatsAppConfigured,
+  onNewMessage,
+} from './whatsapp.js';
 
 // Store call manager globally for API access
 let callManager: CallManager | null = null;
@@ -182,6 +192,23 @@ async function main() {
           case '/api/get_call_status':
             result = callManager!.getCallStatus(data.call_id);
             break;
+
+          // WhatsApp API routes
+          case '/api/whatsapp/send_text':
+            result = await whatsappSendText(data.to, data.message);
+            break;
+          case '/api/whatsapp/send_image':
+            result = await whatsappSendImage(data.to, data.image_url, data.caption);
+            break;
+          case '/api/whatsapp/send_audio':
+            result = await whatsappSendAudio(data.to, data.audio_url);
+            break;
+          case '/api/whatsapp/send_document':
+            result = await whatsappSendDocument(data.to, data.document_url, data.filename, data.caption);
+            break;
+          case '/api/whatsapp/read_messages':
+            result = { messages: await whatsappGetMessages(data.limit, data.since_timestamp) };
+            break;
           default:
             res.writeHead(404);
             res.end('Not found');
@@ -232,6 +259,9 @@ async function main() {
     console.error('CallMe HTTP Server ready');
     console.error(`Phone: ${serverConfig.phoneNumber} -> ${serverConfig.userPhoneNumber}`);
     console.error(`Webhook: ${publicUrl}/twiml`);
+    if (isWhatsAppConfigured()) {
+      console.error(`WhatsApp: ${publicUrl}/kapso (Kapso webhook)`);
+    }
     console.error(`API: http://localhost:${apiPort}/api/*`);
     console.error('');
   });
