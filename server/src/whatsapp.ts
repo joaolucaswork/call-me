@@ -268,7 +268,13 @@ async function transcribeAudio(buffer: Buffer, mimeType: string): Promise<string
  * Handles both Kapso-format and Meta-format webhooks
  */
 export async function handleWebhook(body: any): Promise<void> {
-  // Kapso webhook format (kind: kapso)
+  // Kapso webhook v2 format: { message: { from, id, type, text, ... } }
+  if (body.message) {
+    await ingestMessage(body.message);
+    return;
+  }
+
+  // Kapso webhook format (kind: kapso, event-based)
   if (body.event) {
     await processKapsoEvent(body);
     return;
